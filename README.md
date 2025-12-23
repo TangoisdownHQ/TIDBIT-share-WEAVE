@@ -158,34 +158,6 @@ Data must remain verifiable for decades
 
 This project is about cryptographic continuity, not just encryption.
 
-📂 Project Structure
-TIDBIT-share-WEAVE/
-├── backend-rs/                 # Rust backend (core system)
-│   ├── Cargo.toml
-│   └── src/
-│       ├── main.rs
-│       ├── config.rs
-│       ├── error.rs
-│       ├── models.rs
-│       │
-│       ├── crypto/             # Canonical crypto + PQC
-│       │   └── canonical/
-│       │       ├── document.rs
-│       │       ├── envelope.rs
-│       │       ├── kem.rs
-│       │       ├── keystore.rs
-│       │       └── hash.rs
-│       │
-│       ├── pqc/                # Kyber / Dilithium / SHA3
-│       ├── c2c/                # Chain-of-custody system
-│       ├── identity/           # Wallet + identity logic
-│       ├── routes/             # HTTP API (upload/download/share)
-│       └── cli/                # CLI tooling
-│
-├── docker/                     # Deployment tooling
-├── image/                      # Assets / diagrams
-└── README.md
-
 🔐 Security Architecture
 🔒 Encryption Pipeline
 plaintext file
