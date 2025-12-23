@@ -10,7 +10,7 @@
 > A cryptographic constellation representing file lineage, custody, and trust without central authority.
 
 
-🌐 TIDBIT-share-WEAVE
+## 🌐 TIDBIT-share-WEAVE
 
 Quantum-Resistant, Zero-Trust File Custody & Sharing
 
@@ -22,7 +22,7 @@ No central authority.
 No silent mutation.
 Every action is signed, linked, and traceable.
 
-🧠 What Makes TIDBIT-share-WEAVE Different
+## What Makes TIDBIT-share-WEAVE Different
 
 Unlike traditional file-sharing platforms, TIDBIT-share-WEAVE treats files as cryptographic entities, not just data blobs.
 
@@ -38,8 +38,8 @@ Remains verifiable decades into the future
 
 This makes it suitable for high-assurance environments where trust cannot be assumed.
 
-🔐 Core Capabilities
-🧬 Post-Quantum Cryptography (PQC)
+## Core Capabilities
+Post-Quantum Cryptography (PQC)
 
 AES-256-GCM — payload encryption
 
@@ -49,7 +49,7 @@ Dilithium — post-quantum signatures
 
 SHA3-256 — tamper-evident hashing
 
-🧾 Zero-Trust Chain-of-Custody
+## Zero-Trust Chain-of-Custody
 
 Every file action creates a signed, append-only event
 
@@ -57,7 +57,7 @@ Immutable linkage between versions and actions
 
 Forensic-grade audit trails
 
-👤 Wallet-Based Identity
+## Wallet-Based Identity
 
 EVM & Solana wallets as identity roots
 
@@ -65,7 +65,7 @@ No usernames or passwords
 
 Ownership = cryptographic proof
 
-📂 Secure File Versioning
+## Secure File Versioning
 
 Logical document separation
 
@@ -73,7 +73,7 @@ Hash-based deduplication
 
 Verifiable version history
 
-🌍 Decentralized Storage (Optional)
+## Decentralized Storage (Optional)
 
 Encrypted payload anchoring via Arweave
 
@@ -81,7 +81,7 @@ Custody metadata anchoring
 
 Infrastructure-independent verification
 
-🧾 Chain-of-Custody Model (Simple Explanation)
+## Chain-of-Custody Model (Simple Explanation)
 
 Every file interaction generates a cryptographically linked event containing:
 
@@ -105,7 +105,7 @@ Long-term archival
 
 Incident response & forensics
 
-🧬 Design Philosophy
+## Design Philosophy
 
 Zero Trust by Default
 
@@ -119,7 +119,7 @@ Verifiability Over Convenience
 
 Trust is never implied — it is cryptographically proven.
 
-🧪 Project Status
+## Project Status
 
 Current Phase: C18 / C19
 
@@ -132,7 +132,7 @@ Current Phase: C18 / C19
 🟡 Access control & sharing policies
 🟡 Wallet-to-wallet delivery flows
 
-🗺 Roadmap
+## Roadmap
 
 Encrypted wallet-to-wallet file delivery
 
@@ -146,7 +146,7 @@ Web UI with wallet-native auth
 
 Long-term verification tooling
 
-🧬 Why This Exists
+## Why This Exists
 
 TIDBIT-share-WEAVE is built for a future where:
 
@@ -158,8 +158,8 @@ Data must remain verifiable for decades
 
 This project is about cryptographic continuity, not just encryption.
 
-🔐 Security Architecture
-🔒 Encryption Pipeline
+ ## Security Architecture 
+Encryption Pipeline
 plaintext file
    ↓ AES-256-GCM
 ciphertext + nonce
@@ -190,7 +190,7 @@ cargo run -- doc envelope-create --input file.txt
 cargo run -- c2c list
 cargo run -- c2c anchor <event-id>
 
-🌌 Use Cases
+## 🌌 Use Cases
 
 Secure document drafting
 
@@ -206,10 +206,13 @@ Post-quantum secure archives
 
 Blockchain ecosystem file exchange
 
-⚖️ License
+## ⚖️ License
 
 MIT (subject to change)
 
-🌐 TIDBIT-share-WEAVE
+
+## 🌐 TIDBIT-share-WEAVE
 
 Zero-trust. Post-quantum encrypted. Wallet-connected file custody.
+
+
