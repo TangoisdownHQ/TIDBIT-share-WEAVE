@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Document History</title>
+    <script src="app.js"></script>
+</head>
+<body>
+<h1>Document History</h1>
+<button onclick="logout()">Logout</button>
+
+<div id="history"></div>
+
+<script>
+async function load() {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("id");
+
+    const events = await apiGet("/c2c/events");
+
+    const filtered = events.filter(e =>
+        e.payload?.doc_hash === id || e.logical_doc_id === id
+    );
+
+    document.getElementById("history").innerHTML =
+        filtered.map(e => `
+            <div>
+                ${e.kind} | ${e.id} | ${e.timestamp}
+            </div>
+        `).join("");
+}
+
+load();
+</script>
+</body>
+</html>
+

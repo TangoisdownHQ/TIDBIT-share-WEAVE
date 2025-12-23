@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TIDBIT – Login</title>
+    <meta charset="utf-8" />
+    <script src="app.js" defer></script>
+
+    <style>
+        body {
+            margin: 0;
+            height: 100vh;
+            background: #0e0e0e;
+            color: #e0e0e0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: #161616;
+            border-radius: 12px;
+            padding: 32px;
+            width: 420px;
+            box-shadow: 0 0 40px rgba(0,0,0,0.8);
+            text-align: center;
+        }
+
+        h1 {
+            margin-bottom: 24px;
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            margin-top: 16px;
+            background: #1f1f1f;
+            border: 1px solid #333;
+            color: #fff;
+            font-size: 15px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #2a2a2a;
+        }
+
+        p {
+            margin-top: 20px;
+            font-size: 13px;
+            color: #999;
+        }
+
+        #status {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #aaa;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>TIDBIT – share - WEAVE</h1>
+
+        <button id="login-metamask">Login with MetaMask</button>
+        <div id="status"></div>
+
+        <p>More methods (Phantom, hardware wallet, PQC identity) coming soon.</p>
+    </div>
+</body>
+</html>
+

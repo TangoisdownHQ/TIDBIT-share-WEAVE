@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TIDBIT · Dashboard</title>
+
+  <!-- IMPORTANT: absolute paths -->
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+
+<body>
+  <div class="container">
+
+    <!-- HEADER -->
+    <div class="panel header">
+      <div class="logo">
+        <img src="/logo.png" alt="TIDBIT">
+        <h2>[TIDBIT - share - WEAVE] .  .  . .</h2>
+      </div>
+      <button onclick="logout()">Logout</button>
+    </div>
+
+    <!-- SESSION -->
+    <div class="panel">
+      <h3>Session</h3>
+      <pre id="sessionInfo">Loading session…</pre>
+    </div>
+
+    <!-- DOCUMENTS -->
+    <div class="panel">
+      <h3>Your Documents</h3>
+      <div id="docList">Loading documents…</div>
+    </div>
+
+    <!-- NETWORK -->
+    <div class="panel">
+      <h3>Arweave & Anchors</h3>
+      <p class="muted">
+        Permanent storage · C2C anchors · Envelope verification (C20)
+      </p>
+    </div>
+
+  </div>
+</body>
+</html>
+

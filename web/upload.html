@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload Document</title>
+    <script src="app.js"></script>
+</head>
+<body>
+
+<h1>Upload a Document</h1>
+
+<input type="file" id="file" />
+<button onclick="uploadDoc()">Upload</button>
+
+<div id="result"></div>
+
+<script>
+async function uploadDoc() {
+    const f = document.getElementById("file").files[0];
+    if (!f) return alert("Select a file first");
+
+    const bytes = new Uint8Array(await f.arrayBuffer());
+
+    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+    const hashHex = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+
+    const res = await apiPost("/c2c/events", {
+        action: "upload",
+        hash_hex: hashHex
+    });
+
+    document.getElementById("result").innerText =
+        "Uploaded. Event ID: " + res.id;
+}
+</script>
+</body>
+</html>
+
