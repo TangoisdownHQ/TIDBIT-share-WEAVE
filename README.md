@@ -1,171 +1,189 @@
-🌐 TIDBIT-share-WEAVE (Quantum-Resistant Edition)
-Zero-trust. Post-quantum encrypted. Wallet-connected secure file creation and sharing.
+<p align="center">
+  <img src="image/tidbit-share-weave-logo.png" width="420" alt="TIDBIT-share-WEAVE logo">
+</p>
 
-TIDBIT-share-WEAVE is a decentralized, post-quantum secure, end-to-end encrypted file creation, editing, and sharing system designed for the next generation of:
+<h1 align="center">TIDBIT-share-WEAVE</h1>
 
-decentralized organizations
+<p align="center">
+  <strong>Quantum-Resistant · Zero-Trust · Wallet-Native File Custody</strong>
+</p>
+> A cryptographic constellation representing file lineage, custody, and trust without central authority.
 
-multi-chain identities
 
-secure communications
+🌐 TIDBIT-share-WEAVE
 
-long-term storage
+Quantum-Resistant, Zero-Trust File Custody & Sharing
 
-post-quantum threat models
+TIDBIT-share-WEAVE is a decentralized, post-quantum–resilient file creation, versioning, and sharing system designed for zero-trust environments, long-term data integrity, and wallet-native identity.
 
-Built with:
+It provides cryptographically verifiable chain-of-custody for files — ensuring confidentiality, authenticity, and auditability even under future quantum threat models.
 
-🦀 Rust (Axum) backend
+No central authority.
+No silent mutation.
+Every action is signed, linked, and traceable.
 
-🔐 AES-256-GCM file encryption
+🧠 What Makes TIDBIT-share-WEAVE Different
 
-🧬 Kyber-1024 PQC key encapsulation
+Unlike traditional file-sharing platforms, TIDBIT-share-WEAVE treats files as cryptographic entities, not just data blobs.
 
-✍️ Dilithium-3 PQC signatures
+Each file:
 
-🛢 Arweave + Bundlr permanent storage
+Is encrypted client-side
 
-🔗 Polygon/Web3 wallets for identity
+Has an immutable event history
 
-🧹 Optional sanitization/scanning for malware & unsafe links
+Is owned and controlled via wallet identity
 
-🧾 PQC-signed chain-of-custody for file versioning
+Remains verifiable decades into the future
 
-Users can securely create, edit, save, and send encrypted files to:
+This makes it suitable for high-assurance environments where trust cannot be assumed.
 
-Wallet addresses
+🔐 Core Capabilities
+🧬 Post-Quantum Cryptography (PQC)
 
-Email addresses
+AES-256-GCM — payload encryption
 
-Phone numbers (SMS)
+ML-KEM (Kyber) — quantum-resistant key encapsulation
 
-External users
+Dilithium — post-quantum signatures
 
-Internal team members
+SHA3-256 — tamper-evident hashing
 
-Everything is protected with quantum-resistant encryption and optional malware scanning.
+🧾 Zero-Trust Chain-of-Custody
 
-🚀 Features
-🔐 Post-Quantum Encryption (PQC)
+Every file action creates a signed, append-only event
 
-AES-256-GCM for all file encryption
+Immutable linkage between versions and actions
 
-Kyber-1024 for wrapping AES keys
+Forensic-grade audit trails
 
-Dilithium-3 signatures for integrity and identity
+👤 Wallet-Based Identity
 
-SHA3-256 hashing for tamper detection
+EVM & Solana wallets as identity roots
 
-🧾 Permanent Storage
+No usernames or passwords
 
-Encrypted data stored on Arweave via Bundlr
+Ownership = cryptographic proof
 
-Metadata + chain-of-custody events also stored on Arweave
+📂 Secure File Versioning
 
-📝 Create / Edit / Save Files Securely
+Logical document separation
 
-Users can create documents inside the app
+Hash-based deduplication
 
-Modify or update files
+Verifiable version history
 
-Every new save becomes a new version
+🌍 Decentralized Storage (Optional)
 
-Each version has its own PQC-signed C2C event
+Encrypted payload anchoring via Arweave
 
-📤 Send Files to Anyone
+Custody metadata anchoring
 
-Send encrypted files via:
+Infrastructure-independent verification
 
-Wallet → wallet
+🧾 Chain-of-Custody Model (Simple Explanation)
 
-Email
+Every file interaction generates a cryptographically linked event containing:
 
-Text message
+Wallet identity of the actor
 
-Secure PQC link
+Timestamp
 
-Internal user address
+File hash
 
-🛡 Optional Sanitization Layer
+PQC signature
 
-Users can enable scanning for:
+Optional decentralized storage anchor
 
-Malware
+This forms a verifiable FileTrail ledger, suitable for:
 
-Phishing links
+Compliance & audit
 
-Unsafe attachments
+Legal evidence
 
-MIME inconsistencies
+Long-term archival
 
-Executable masquerading (PDF/exe trickery)
+Incident response & forensics
 
-✔ Zero-Trust Architecture
+🧬 Design Philosophy
 
-Backend never stores plaintext
+Zero Trust by Default
 
-All encryption happens client-side or in sandbox
+Post-Quantum First
 
-PQC identity required for all sensitive operations
+Wallets as Identity
 
-🔗 Hybrid Identity
+No Silent State Changes
 
-Authentication can combine:
+Verifiability Over Convenience
 
-Wallet signature (ECDSA)
-+  
-Dilithium PQC signature
+Trust is never implied — it is cryptographically proven.
+
+🧪 Project Status
+
+Current Phase: C18 / C19
+
+✅ Secure file uploads
+✅ FileTrail chain-of-custody
+✅ Wallet identity (CLI + API)
+✅ PQC-encrypted document envelopes
+✅ Optional Arweave anchoring
+
+🟡 Access control & sharing policies
+🟡 Wallet-to-wallet delivery flows
+
+🗺 Roadmap
+
+Encrypted wallet-to-wallet file delivery
+
+PQC-signed access grants
+
+Secure sharing links (email / SMS)
+
+Malware & content sanitization
+
+Web UI with wallet-native auth
+
+Long-term verification tooling
+
+🧬 Why This Exists
+
+TIDBIT-share-WEAVE is built for a future where:
+
+Quantum computers are real
+
+Centralized trust collapses
+
+Data must remain verifiable for decades
+
+This project is about cryptographic continuity, not just encryption.
 
 📂 Project Structure
-tidbit-share-weave/
-├── backend-rs/                      # Rust PQC backend
+TIDBIT-share-WEAVE/
+├── backend-rs/                 # Rust backend (core system)
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs
 │       ├── config.rs
 │       ├── error.rs
 │       ├── models.rs
-│       ├── arweave.rs
 │       │
-│       ├── pqc/                     # Post-Quantum Crypto
-│       │   ├── mod.rs
-│       │   ├── kyber.rs            # Kyber-1024 KEM utilities
-│       │   ├── dilithium.rs        # Dilithium-3 signature utilities
-│       │   └── sha3.rs             # SHA3 hashing
+│       ├── crypto/             # Canonical crypto + PQC
+│       │   └── canonical/
+│       │       ├── document.rs
+│       │       ├── envelope.rs
+│       │       ├── kem.rs
+│       │       ├── keystore.rs
+│       │       └── hash.rs
 │       │
-│       ├── crypto/                  # Symmetric crypto
-│       │   ├── mod.rs
-│       │   ├── aes_gcm.rs          # AES-256-GCM file encryption
-│       │   └── keywrap.rs          # (Phase 2) PQC-AES hybrid key wrap
-│       │
-│       ├── sanitizer/               # (Phase 3) Optional sanitization layer
-│       │   ├── mod.rs
-│       │   ├── file_scan.rs
-│       │   ├── link_scan.rs
-│       │   ├── mime_check.rs
-│       │   └── sandbox.rs
-│       │
-│       ├── routes/                  # Application API
-│       │   ├── mod.rs
-│       │   ├── health.rs
-│       │   ├── upload.rs           # Upload encrypted files
-│       │   ├── download.rs         # Download + decrypt
-│       │   └── share.rs            # Send files to users/wallet/email
-│       │
-│       ├── c2c/                     # Chain-of-Custody
-│       │   ├── mod.rs
-│       │   ├── types.rs
-│       │   ├── record.rs           # Create C2C events
-│       │   └── verify.rs           # Verify signed C2C chains
-│       │
-│       └── identity/                # Wallet + PQC identity
-│           ├── mod.rs
-│           ├── registry.rs          # Polygon on-chain access control
-│           ├── wallet_verify.rs     # ECDSA signature verification
-│           └── proof_of_key.rs      # PQC challenge/response
+│       ├── pqc/                # Kyber / Dilithium / SHA3
+│       ├── c2c/                # Chain-of-custody system
+│       ├── identity/           # Wallet + identity logic
+│       ├── routes/             # HTTP API (upload/download/share)
+│       └── cli/                # CLI tooling
 │
-├── frontend/                         # (Upcoming) React/Tailwind UI
-├── contracts/                        # Solidity Access/Identity contracts
+├── docker/                     # Deployment tooling
+├── image/                      # Assets / diagrams
 └── README.md
 
 🔐 Security Architecture
@@ -173,110 +191,14 @@ tidbit-share-weave/
 plaintext file
    ↓ AES-256-GCM
 ciphertext + nonce
-   ↓ Kyber-1024
-AES key wrapped for recipient
-   ↓ Dilithium-3
-signed metadata
-   ↓ Arweave/Bundlr
-permanent storage
+   ↓ ML-KEM (Kyber)
+wrapped encryption keys
+   ↓ Canonical Envelope
+PQC-verifiable structure
+   ↓ Optional Arweave anchor
 
 
-Everything is quantum-resistant and tamper-evident.
-
-🛡 Sanitization Architecture (Optional)
-
-Users may toggle:
-
-🔍 File Malware Scan
-
-ClamAV
-
-YARA rules
-
-Magic byte validation
-
-MIME sniffing
-
-🌐 Link Scanner
-
-Redirect detection
-
-Phishing detection
-
-URL normalization
-
-Safe domain whitelist/blacklist
-
-🧪 Safe Viewer Sandbox
-
-For dangerous file formats:
-
-PDFs
-
-DOCX (macro risk)
-
-HTML files
-
-Executables
-
-The viewer runs in:
-
-WASM sandbox
-
-Firejail
-
-Bubblewrap (bwrap)
-
-Recipient sees:
-
-“Opened safely in sandbox mode — device protected.”
-
-🧾 Chain-of-Custody (C2C)
-
-Every file and every version generates a PQC-signed event:
-
-C2C Event
-├── file_id
-├── sha3_hash
-├── action (UPLOAD/EDIT/SHARE)
-├── timestamp
-├── previous_event_hash
-├── dilithium_signature
-└── arweave_tx
-
-
-This is stored on Arweave as:
-
-tamper-proof
-
-immutable
-
-permanent
-
-cryptographically verifiable
-
-Perfect for compliance, forensics, and enterprise use.
-
-👤 Identity & Access
-🌐 Web3 Wallets (MetaMask, Phantom, etc.)
-
-Users authenticate via:
-
-ECDSA wallet signature
-
-Optional Dilithium signature
-
-PQC challenge/response
-
-👥 Recipient Model Supports:
-
-Wallet-to-wallet
-
-Email addresses
-
-Phone/SMS (opens a secure PQC link)
-
-Internal usernames in your system
+Everything is quantum-resistant, tamper-evident, and verifiable.
 
 🧪 Backend Setup
 cd backend-rs
@@ -284,8 +206,17 @@ cargo build
 cargo run
 
 
-Backend default:
+Default server:
+
 http://localhost:4000
+
+
+CLI examples:
+
+cargo run -- doc upload file.txt
+cargo run -- doc envelope-create --input file.txt
+cargo run -- c2c list
+cargo run -- c2c anchor <event-id>
 
 🌌 Use Cases
 
@@ -297,45 +228,16 @@ Multi-chain file transfer
 
 Legal, medical, financial records
 
-Collaboration with provable C2C
+Collaboration with provable custody
 
 Post-quantum secure archives
 
 Blockchain ecosystem file exchange
 
-🗺 Roadmap
-✔ Phase 1
-
-PQC primitives (Kyber/Dilithium/SHA3)
-
-✔ Phase 2
-
-AES-256-GCM implementation
-
-🔜 Phase 3
-
-Hybrid keywrap (AES + Kyber)
-
-🔜 Phase 4
-
-File upload/download API routes
-
-🔜 Phase 5
-
-Sanitization module (optional scanning)
-
-🔜 Phase 6
-
-Chain-of-custody integration
-
-🔜 Phase 7
-
-Frontend React UI + Wallet login
-
-🔜 Phase 8
-
-Email/SMS recipient delivery
-
 ⚖️ License
 
-MIT (or anything you choose)
+MIT (subject to change)
+
+🌐 TIDBIT-share-WEAVE
+
+Zero-trust. Post-quantum encrypted. Wallet-connected file custody.
