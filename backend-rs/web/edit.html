@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TIDBIT · Editor</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="container">
+    <section class="panel hero compact-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Browser Editor</p>
+        <h1 id="editTitle">Loading editable document…</h1>
+        <p id="editSubtitle" class="hero-text">Text-like files can be edited here and saved as a new linked version with before/after custody metadata.</p>
+      </div>
+      <div class="hero-actions">
+        <div class="doc-actions">
+          <button id="saveEditedVersionBtn" class="button-primary">Save as new version</button>
+          <a id="editBackLink" class="button-link" href="/document.html">Back to details</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid two-up">
+      <div class="panel">
+        <h3>Before Snapshot</h3>
+        <div id="editMeta" class="session-card">Loading metadata…</div>
+        <pre id="beforeSnapshot" class="editor-readonly">Loading source content…</pre>
+      </div>
+
+      <div class="panel">
+        <h3>After Snapshot</h3>
+        <div class="form-row">
+          <label for="editVersionLabel">Version label</label>
+          <input id="editVersionLabel" placeholder="Edited revision label" />
+        </div>
+        <div class="form-row">
+          <label for="editChangeSummary">Change summary</label>
+          <textarea id="editChangeSummary" rows="3" placeholder="Summarize the edits you made."></textarea>
+        </div>
+        <label class="toggle-row" for="editAnchor">
+          <input type="checkbox" id="editAnchor" />
+          <span>Anchor this edited version to Arweave</span>
+        </label>
+        <textarea id="editableContent" class="editor-textarea" spellcheck="false" placeholder="Editable content will load here for text-like files."></textarea>
+        <div id="editStatus" class="muted"></div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

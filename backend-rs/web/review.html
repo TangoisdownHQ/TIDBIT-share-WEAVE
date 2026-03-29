@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TIDBIT · Review</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.3/dist/sha3.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <section class="panel hero compact-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Review Before Signature</p>
+        <h1 id="reviewTitle">Document Review</h1>
+        <p id="reviewSubtitle" class="hero-text">Loading custody metadata and verified preview…</p>
+      </div>
+      <div class="hero-actions">
+        <div id="sessionInfo" class="session-card">Loading session…</div>
+        <div class="doc-actions">
+          <button id="reviewSignBtn" class="button-primary">Sign this file</button>
+          <button id="reviewDownloadBtn">Download copy</button>
+          <button id="reviewEnlargeBtn">Enlarge preview</button>
+          <button id="reviewEditBtn">Open editor</button>
+          <button onclick="exportEvidence(new URLSearchParams(window.location.search).get('id'), document.getElementById('reviewTitle').textContent)">Export evidence</button>
+          <a id="reviewHistoryLink" class="button-link" href="/document.html">History</a>
+          <a id="reviewDetailLink" class="button-link" href="/document.html">Document details</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid two-up">
+      <div class="panel">
+        <h3>File Preview</h3>
+        <div id="reviewPreview" class="preview-shell">
+          <div class="preview-fallback">
+            <strong>Preparing preview…</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Custody Snapshot</h3>
+        <div id="reviewMeta" class="session-card">Loading metadata…</div>
+        <div class="form-row signature-mode">
+          <label for="signatureMode">Signature mode</label>
+          <select id="signatureMode">
+            <option value="evm_personal_sign">MetaMask / EVM</option>
+            <option value="pq_dilithium3">Dilithium PQ</option>
+          </select>
+        </div>
+        <div id="pqFields" class="grid compact hidden">
+          <div class="form-row">
+            <label for="pqPublicKey">PQ public key (base64)</label>
+            <textarea id="pqPublicKey" rows="4" placeholder="Paste Dilithium public key"></textarea>
+          </div>
+          <div class="form-row">
+            <label for="pqSignature">PQ signed message (base64)</label>
+            <textarea id="pqSignature" rows="6" placeholder="Paste Dilithium signed message blob"></textarea>
+          </div>
+          <p class="muted">PQ signing is optional high-assurance mode. Generate the Dilithium signature client-side or from your external signing workflow, then paste it here for verification and recording.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Custody Timeline</h3>
+      <div id="reviewEvents">Loading events…</div>
+    </section>
+  </div>
+</body>
+</html>

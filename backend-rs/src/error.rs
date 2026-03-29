@@ -20,6 +20,9 @@ pub enum AppError {
     #[error("auth error: {0}")]
     Auth(String),
 
+    #[error("not found: {0}")]
+    NotFound(String), // ✅ ADD THIS
+
     #[error("internal error: {0}")]
     Internal(String),
 
@@ -47,6 +50,7 @@ impl IntoResponse for AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::Auth(_) => StatusCode::UNAUTHORIZED,
+            AppError::NotFound(_) => StatusCode::NOT_FOUND, // ✅ MAP TO 404
 
             // Crypto errors are internal failures, not user mistakes
             AppError::Crypto(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -67,5 +71,20 @@ impl IntoResponse for AppError {
 impl From<hex::FromHexError> for AppError {
     fn from(e: hex::FromHexError) -> Self {
         AppError::Internal(format!("hex decode error: {e}"))
+    }
+}
+
+use sqlx::Error as SqlxError;
+use anyhow::Error as AnyhowError;
+
+impl From<SqlxError> for AppError {
+    fn from(e: SqlxError) -> Self {
+        AppError::Internal(e.to_string())
+    }
+}
+
+impl From<AnyhowError> for AppError {
+    fn from(e: AnyhowError) -> Self {
+        AppError::Internal(e.to_string())
     }
 }

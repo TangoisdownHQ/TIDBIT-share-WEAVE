@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TIDBIT · Public Sign</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.3/dist/sha3.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <section class="panel hero compact-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Secure Recipient Signing</p>
+        <h1 id="publicEnvelopeTitle">Review And Sign</h1>
+        <p id="publicEnvelopeStatus" class="hero-text">Loading envelope…</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button-link" href="/index.html">Home</a>
+      </div>
+    </section>
+
+    <section class="grid two-up">
+      <div class="panel">
+        <h3>Document Preview</h3>
+        <div id="publicEnvelopePreview" class="preview-shell">
+          <div class="preview-fallback">
+            <strong>Preparing preview…</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Envelope Metadata</h3>
+        <div id="publicEnvelopeMeta" class="session-card">Loading metadata…</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h3>Signer Completion</h3>
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="publicSignerName">Full name</label>
+          <input id="publicSignerName" placeholder="Jane Signer" />
+        </div>
+        <div class="form-row">
+          <label for="publicSignerEmail">Email</label>
+          <input id="publicSignerEmail" type="email" placeholder="jane@example.com" />
+        </div>
+        <div class="form-row">
+          <label for="publicSignerTitle">Title</label>
+          <input id="publicSignerTitle" placeholder="General Counsel" />
+        </div>
+        <div class="form-row">
+          <label for="publicSignerOrg">Organization</label>
+          <input id="publicSignerOrg" placeholder="Acme Corp" />
+        </div>
+        <div class="form-row">
+          <label for="publicSignReason">Signature reason</label>
+          <input id="publicSignReason" placeholder="Approval of final version" />
+        </div>
+        <div class="form-row">
+          <label for="publicSignatureMode">Signing mode</label>
+          <select id="publicSignatureMode">
+            <option value="guest_attestation">Guided Guest Attestation</option>
+            <option value="evm_personal_sign">MetaMask / EVM</option>
+            <option value="pq_dilithium3">Dilithium PQ</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="publicAnnotation">Annotations / signing notes</label>
+        <textarea id="publicAnnotation" rows="5" placeholder="Add signer notes, approval language, or typed annotations here."></textarea>
+      </div>
+
+      <div class="form-row">
+        <label>Signer field placement</label>
+        <div class="doc-actions">
+          <button type="button" data-field-tool="signature" class="button-primary">Signature Seal</button>
+          <button type="button" data-field-tool="date">Date Seal</button>
+          <button type="button" data-field-tool="note">Note Seal</button>
+          <button type="button" id="clearFieldPlacements">Clear Placements</button>
+        </div>
+        <div id="publicFieldList" class="field-list">
+          <div class="muted">No signer fields placed yet. Choose a field type and click on the preview.</div>
+        </div>
+        <p class="muted">This creates auditable placement metadata for the envelope. It does not overwrite the original source file bytes.</p>
+      </div>
+
+      <div id="publicEvmFields" class="hidden">
+        <p class="muted">MetaMask signing will prompt the recipient wallet to sign the canonical envelope attestation message.</p>
+      </div>
+
+      <div id="publicPqFields" class="grid compact hidden">
+        <div class="form-row">
+          <label for="publicPqPublicKey">PQ public key (base64)</label>
+          <textarea id="publicPqPublicKey" rows="4" placeholder="Paste Dilithium public key"></textarea>
+        </div>
+        <div class="form-row">
+          <label for="publicPqSignature">PQ signed message (base64)</label>
+          <textarea id="publicPqSignature" rows="6" placeholder="Paste Dilithium signed message blob"></textarea>
+        </div>
+      </div>
+
+      <label class="toggle-row" for="publicConsent">
+        <input type="checkbox" id="publicConsent" />
+        <span>I reviewed this file and consent to signing this envelope.</span>
+      </label>
+
+      <div class="action-row">
+        <button id="publicSignSubmit" class="button-primary">Complete Envelope</button>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

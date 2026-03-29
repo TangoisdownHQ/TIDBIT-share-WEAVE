@@ -1,46 +1,24 @@
-use axum::{Json, extract::{State, Path}};
-use crate::{
-    error::AppError,
-    arweave::download_from_arweave,
-    pqc::keywrap::hybrid_decrypt_file,
-    sanitizer::hybrid::hybrid_sanitize,
-    models::DownloadResponse,
-    config::AppState
-};
-use sha2::{Sha256, Digest};
+use crate::{error::AppError, models::DownloadResponse, sanitizer::hybrid::hybrid_sanitize};
+use axum::{extract::Path, Json};
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
 
-pub async fn download(
-    State(app): State<AppState>,
-    Path(txid): Path<String>,
-) -> Result<Json<DownloadResponse>, AppError> {
+pub async fn download(Path(txid): Path<String>) -> Result<Json<DownloadResponse>, AppError> {
+    // TEMP stub until Arweave wiring is complete
+    let plaintext = b"download stub".to_vec();
+    let mime_type = "application/octet-stream".to_string();
 
-    // Download encrypted file
-    let encrypted_bytes = download_from_arweave(&txid).await?;
+    // Sanitize (manual error mapping)
+    hybrid_sanitize(&plaintext, &mime_type, None)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    // Decrypt using PQC
-    let (plaintext, mime_type) = hybrid_decrypt_file(&encrypted_bytes)?;
-
-    // Re-sanitize file after decryption
     let sha256_hex = hex::encode(Sha256::digest(&plaintext));
-
-    hybrid_sanitize(
-        &plaintext,
-        &mime_type,
-        &sha256_hex,
-        &app.config.vt_api_key,
-        &app.config.otx_api_key,
-        &app.config.gsb_api_key,
-        &app.config.hibp_api_key,
-        &app.config.ipinfo_key,
-        None,
-        None,
-    ).await?;
 
     Ok(Json(DownloadResponse {
         txid,
         mime_type,
         sha256_hex,
-        base64_data: base64::encode(plaintext),
+        base64_data: base64::engine::general_purpose::STANDARD.encode(plaintext),
     }))
 }
-

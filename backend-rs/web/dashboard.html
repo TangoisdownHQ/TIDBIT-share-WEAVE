@@ -2,46 +2,151 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>TIDBIT · Dashboard</title>
-
-  <!-- IMPORTANT: absolute paths -->
+  <title>TIDBIT · Home</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.3/dist/sha3.min.js"></script>
 </head>
-
 <body>
   <div class="container">
-
-    <!-- HEADER -->
-    <div class="panel header">
-      <div class="logo">
-        <img src="/logo.png" alt="TIDBIT">
-        <h2>[TIDBIT - share - WEAVE] .  .  . .</h2>
+    <section class="hero panel">
+      <div class="hero-copy">
+        <p class="eyebrow">Zero-Trust File Custody</p>
+        <h1>TIDBIT-share-WEAVE</h1>
+        <p class="hero-text">
+          Upload, review, verify, sign, and manage files with cryptographic custody records.
+        </p>
       </div>
-      <button onclick="logout()">Logout</button>
+      <div class="hero-actions">
+        <button class="button-secondary" onclick="logout()">Logout</button>
+      </div>
+    </section>
+
+    <section class="panel tab-bar">
+      <button id="homeTabBtn" class="button-primary" type="button">Home</button>
+      <button id="docsTabBtn" type="button">Documents &amp; Edits</button>
+    </section>
+
+    <div id="homeTabPanel">
+      <section class="grid two-up">
+        <div class="panel">
+          <h3>Session</h3>
+          <div id="sessionInfo" class="session-card">Loading session…</div>
+        </div>
+
+        <div class="panel">
+          <h3>Upload Document</h3>
+          <div class="form-row">
+            <label for="uploadFile">File</label>
+            <input type="file" id="uploadFile" />
+          </div>
+          <div class="form-row">
+            <label for="uploadLabel">Label</label>
+            <input type="text" id="uploadLabel" placeholder="Custody memo, contract, evidence package..." />
+          </div>
+          <label class="toggle-row" for="uploadAnchor">
+            <input type="checkbox" id="uploadAnchor" />
+            <span>Anchor this upload to Arweave</span>
+          </label>
+          <button id="uploadBtn" class="button-primary">Upload</button>
+          <div class="progress-wrap">
+            <progress id="uploadProgress" value="0" max="100"></progress>
+            <span id="uploadStatus" class="muted"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid stat-grid" id="overviewStats">
+        <div class="stat-card"><strong>Loading…</strong><span class="muted">overview</span></div>
+      </section>
     </div>
 
-    <!-- SESSION -->
-    <div class="panel">
-      <h3>Session</h3>
-      <pre id="sessionInfo">Loading session…</pre>
-    </div>
+    <div id="docsTabPanel" class="hidden">
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Your Documents</h3>
+            <p class="muted">Open a document to handle details, review, edits, versioning, and evidence.</p>
+          </div>
+        </div>
+        <div id="docList" class="doc-grid">Loading documents…</div>
+      </div>
 
-    <!-- DOCUMENTS -->
-    <div class="panel">
-      <h3>Your Documents</h3>
-      <div id="docList">Loading documents…</div>
+      <div class="panel">
+        <h3>Inbox</h3>
+        <div id="inboxList" class="inbox-list">Loading inbox…</div>
+      </div>
     </div>
-
-    <!-- NETWORK -->
-    <div class="panel">
-      <h3>Arweave & Anchors</h3>
-      <p class="muted">
-        Permanent storage · C2C anchors · Envelope verification (C20)
-      </p>
-    </div>
-
   </div>
+
+  <section id="shareModal" class="modal-shell hidden" aria-hidden="true">
+    <div class="modal-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Share Document</p>
+          <h3 id="shareModalTitle">Create share</h3>
+        </div>
+        <button type="button" class="button-secondary" id="closeShareModal">Close</button>
+      </div>
+
+      <div id="shareModalState" class="share-state">No document selected.</div>
+
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalRecipientName">Recipient name</label>
+          <input id="modalRecipientName" placeholder="Signer full name" />
+        </div>
+        <div class="form-row">
+          <label for="modalRecipientWallet">Recipient wallet</label>
+          <input id="modalRecipientWallet" placeholder="0x... optional" />
+        </div>
+      </div>
+
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalRecipientEmail">Email</label>
+          <input id="modalRecipientEmail" type="email" placeholder="signer@example.com" />
+        </div>
+        <div class="form-row">
+          <label for="modalRecipientPhone">Phone / SMS</label>
+          <input id="modalRecipientPhone" type="tel" placeholder="+1 555 555 5555" />
+        </div>
+      </div>
+
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalAgentHandle">AI agent / automation handle</label>
+          <input id="modalAgentHandle" placeholder="agent://legal-review-bot or workflow id" />
+        </div>
+        <div class="form-row">
+          <label for="modalShareChannel">Share helper</label>
+          <select id="modalShareChannel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="telegram">Telegram</option>
+            <option value="linkedin">LinkedIn</option>
+            <option value="x">X / Twitter</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="modalShareNote">Share note</label>
+        <textarea id="modalShareNote" rows="4" placeholder="Review, approve, sign, or pass to an AI agent workflow."></textarea>
+      </div>
+
+      <div class="doc-actions">
+        <button id="shareBtn" class="button-primary">Create share</button>
+        <a id="emailShareLink" class="button-link disabled" href="#" aria-disabled="true">Email</a>
+        <a id="smsShareLink" class="button-link disabled" href="#" aria-disabled="true">SMS</a>
+        <a id="socialShareLink" class="button-link disabled" href="#" aria-disabled="true" target="_blank" rel="noreferrer">Social</a>
+        <button id="copySigningLink" type="button">Copy signing link</button>
+        <button id="copyAgentPayload" type="button">Copy AI payload</button>
+      </div>
+
+      <pre id="shareResult" class="muted">No share created yet.</pre>
+    </div>
+  </section>
 </body>
 </html>
-

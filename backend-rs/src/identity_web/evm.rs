@@ -19,11 +19,18 @@ use crate::crypto::canonical::keystore::load_or_create_mlkem_keypair;
 pub struct EvmNonceResponse {
     pub session_id: String,
     pub nonce: String,
+    pub message: String,
 }
 
 pub async fn evm_nonce_handler(State(st): State<AuthState>) -> Json<EvmNonceResponse> {
     let (session_id, nonce) = st.create_nonce();
-    Json(EvmNonceResponse { session_id, nonce })
+    let message = evm_login_message(&nonce);
+
+    Json(EvmNonceResponse {
+        session_id,
+        nonce,
+        message,
+    })
 }
 
 // ============================================================
@@ -55,13 +62,12 @@ pub async fn evm_verify_handler(
         return Err(AppError::Auth("Empty signature".into()));
     }
 
-    // 1) one-time nonce
     let nonce = st
         .take_nonce(sid)
         .ok_or_else(|| AppError::Auth("Unknown or expired session".into()))?;
 
-    // 2) recover signer from the *exact* message the frontend signs
     let message = evm_login_message(&nonce);
+
     let recovered = verify_evm_signature(&message, signature)
         .map_err(|_| AppError::Auth("Invalid signature".into()))?
         .to_lowercase();
@@ -70,10 +76,8 @@ pub async fn evm_verify_handler(
         return Err(AppError::Auth("Signature does not match address".into()));
     }
 
-    // 3) bind session
     st.bind_wallet(sid.to_string(), address.clone(), "evm");
 
-    // 4) ensure PQC keys exist for this wallet
     let keys = load_or_create_mlkem_keypair(&address)
         .map_err(|e| AppError::Internal(format!("mlkem keystore: {e}")))?;
 
@@ -89,7 +93,7 @@ pub async fn evm_verify_handler(
 // SIGNATURE VERIFICATION
 // ============================================================
 
-fn verify_evm_signature(message: &str, signature: &str) -> Result<String, ()> {
+pub fn verify_evm_signature(message: &str, signature: &str) -> Result<String, ()> {
     let sig: Signature = signature.parse().map_err(|_| ())?;
     let msg_hash = hash_message(message);
     let recovered = sig.recover(msg_hash).map_err(|_| ())?;

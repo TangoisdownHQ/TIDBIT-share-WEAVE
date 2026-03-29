@@ -10,7 +10,17 @@ argon2 = "0.5"
 rand = "0.8"
 zeroize = "1.7"
 cookie = "0.18"
-ethers-core = "2"
+ethers-core = "2.0"
+ethers-signers = "2.0"
+# Database (Supabase Postgres)
+sqlx = { version = "0.7", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "uuid",
+    "chrono",
+    "macros"
+] }
+
 
 # PQC
 pqcrypto-kyber = "0.7"
@@ -54,4 +64,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower = "0.4"
 # HTTP client (future use: Arweave/Bundlr/VT/etc.)
 reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
+urlencoding = "2"
+
+[[bin]]
+name = "tidbit"
+path = "src/main.rs"
 

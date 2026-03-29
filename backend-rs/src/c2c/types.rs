@@ -8,6 +8,7 @@ pub enum C2CEventKind {
     DocumentDownloaded,
     DocumentSigned,
     DocumentUpdated,
+    DocumentShared,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

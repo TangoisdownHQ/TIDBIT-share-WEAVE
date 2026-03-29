@@ -7,212 +7,220 @@
 <p align="center">
   <strong>Quantum-Resistant · Zero-Trust · Wallet-Native File Custody</strong>
 </p>
-> A cryptographic constellation representing file lineage, custody, and trust without central authority.
 
+> A cryptographic constellation representing file lineage, custody, and trust without central authority.
 
 ## 🌐 TIDBIT-share-WEAVE
 
 Quantum-Resistant, Zero-Trust File Custody & Sharing
 
-TIDBIT-share-WEAVE is a decentralized, post-quantum–resilient file creation, versioning, and sharing system designed for zero-trust environments, long-term data integrity, and wallet-native identity.
+TIDBIT-share-WEAVE is a decentralized, post-quantum-resilient file creation, versioning, review, signing, and sharing system designed for zero-trust environments, long-term data integrity, and wallet-native identity.
 
-It provides cryptographically verifiable chain-of-custody for files — ensuring confidentiality, authenticity, and auditability even under future quantum threat models.
+It provides cryptographically verifiable chain-of-custody for files, ensuring confidentiality, authenticity, and auditability even under future quantum threat models.
 
 No central authority.
 No silent mutation.
 Every action is signed, linked, and traceable.
 
-## What Makes TIDBIT-share-WEAVE Different
+## 🧠 What Makes TIDBIT-share-WEAVE Different
 
 Unlike traditional file-sharing platforms, TIDBIT-share-WEAVE treats files as cryptographic entities, not just data blobs.
 
 Each file:
 
-Is encrypted client-side
-
-Has an immutable event history
-
-Is owned and controlled via wallet identity
-
-Remains verifiable decades into the future
+- Is enveloped for tamper-evident custody
+- Has an immutable event history
+- Is owned and controlled via wallet identity
+- Remains verifiable decades into the future
 
 This makes it suitable for high-assurance environments where trust cannot be assumed.
 
-## Core Capabilities
-Post-Quantum Cryptography (PQC)
+## 🔐 Core Capabilities
 
-AES-256-GCM — payload encryption
+### 🧬 Post-Quantum Cryptography (PQC)
 
-ML-KEM (Kyber) — quantum-resistant key encapsulation
+- AES-256-GCM / XChaCha20-Poly1305 payload protection
+- ML-KEM (Kyber) quantum-resistant key encapsulation
+- Dilithium post-quantum signatures
+- SHA3-256 tamper-evident hashing
 
-Dilithium — post-quantum signatures
+### 🧾 Zero-Trust Chain-of-Custody
 
-SHA3-256 — tamper-evident hashing
+- Every file action creates a signed, append-only event
+- Immutable linkage between versions and actions
+- Forensic-grade audit trails
 
-## Zero-Trust Chain-of-Custody
+### 👤 Wallet-Based Identity
 
-Every file action creates a signed, append-only event
+- EVM and Solana wallets as identity roots
+- No usernames or passwords
+- Ownership and access tied to cryptographic proof
 
-Immutable linkage between versions and actions
+### 📂 Secure File Versioning
 
-Forensic-grade audit trails
+- Logical document separation
+- Hash-based deduplication
+- Verifiable version history with parent-child lineage
 
-## Wallet-Based Identity
+### 🌍 Decentralized Storage / Anchoring
 
-EVM & Solana wallets as identity roots
+- Supabase Storage for active application storage
+- Optional Arweave-style anchoring for file and evidence hashes
+- Infrastructure-independent verification
 
-No usernames or passwords
-
-Ownership = cryptographic proof
-
-## Secure File Versioning
-
-Logical document separation
-
-Hash-based deduplication
-
-Verifiable version history
-
-## Decentralized Storage (Optional)
-
-Encrypted payload anchoring via Arweave
-
-Custody metadata anchoring
-
-Infrastructure-independent verification
-
-## Chain-of-Custody Model (Simple Explanation)
+## 🧾 Chain-of-Custody Model
 
 Every file interaction generates a cryptographically linked event containing:
 
-Wallet identity of the actor
+- Actor identity
+- Timestamp
+- File hash
+- Signature or attestation metadata
+- Optional decentralized storage anchor
 
-Timestamp
+This forms a verifiable file-trail ledger suitable for:
 
-File hash
+- Compliance and audit
+- Legal evidence
+- Long-term archival
+- Incident response and forensics
 
-PQC signature
+## 🧬 Design Philosophy
 
-Optional decentralized storage anchor
+- Zero Trust by Default
+- Post-Quantum First
+- Wallets as Identity
+- No Silent State Changes
+- Verifiability Over Convenience
 
-This forms a verifiable FileTrail ledger, suitable for:
+Trust is never implied. It is cryptographically proven.
 
-Compliance & audit
+## 🧪 Project Status
 
-Legal evidence
+Current state includes:
 
-Long-term archival
+- Wallet login for MetaMask and Phantom
+- Secure file uploads
+- Review-before-sign flow
+- Public signing links
+- Document version creation
+- Evidence export
+- Inbox and share records
+- Optional Arweave anchoring
+- Policy and agent API groundwork
 
-Incident response & forensics
+Still in progress:
 
-## Design Philosophy
+- Browser-side PQ crypto generation/signing
+- Real provider-backed outbound delivery setup
+- Public deployment and production billing
+- Office-class collaborative editing
 
-Zero Trust by Default
+## 🗺️ Roadmap
 
-Post-Quantum First
+- End-to-end browser-side PQ encryption/signing
+- Provider-backed email and SMS delivery
+- Wallet-to-wallet delivery flows
+- Human and AI agent policy routing
+- Evidence bundle anchoring
+- Subscription billing
+- Production deployment
 
-Wallets as Identity
-
-No Silent State Changes
-
-Verifiability Over Convenience
-
-Trust is never implied — it is cryptographically proven.
-
-## Project Status
-
-Current Phase: C18 / C19
-
-✅ Secure file uploads
-✅ FileTrail chain-of-custody
-✅ Wallet identity (CLI + API)
-✅ PQC-encrypted document envelopes
-✅ Optional Arweave anchoring
-
-🟡 Access control & sharing policies
-🟡 Wallet-to-wallet delivery flows
-
-## Roadmap
-
-Encrypted wallet-to-wallet file delivery
-
-PQC-signed access grants
-
-Secure sharing links (email / SMS)
-
-Malware & content sanitization
-
-Web UI with wallet-native auth
-
-Long-term verification tooling
-
-## Why This Exists
+## 🧬 Why This Exists
 
 TIDBIT-share-WEAVE is built for a future where:
 
-Quantum computers are real
-
-Centralized trust collapses
-
-Data must remain verifiable for decades
+- Quantum computers are real
+- Centralized trust collapses
+- Data must remain verifiable for decades
 
 This project is about cryptographic continuity, not just encryption.
 
- ## Security Architecture 
-Encryption Pipeline
+## 📂 Project Structure
+
+```text
+TIDBIT-share-WEAVE/
+├── backend-rs/
+│   ├── Cargo.toml
+│   ├── migrations/
+│   ├── src/
+│   │   ├── main.rs
+│   │   ├── config.rs
+│   │   ├── error.rs
+│   │   ├── models.rs
+│   │   ├── crypto/
+│   │   ├── pqc/
+│   │   ├── c2c/
+│   │   ├── identity/
+│   │   ├── routes/
+│   │   ├── storage/
+│   │   └── cli/
+│   └── web/
+├── docker/
+├── image/
+└── README.md
+```
+
+## 🔐 Security Architecture
+
+### 🔒 Encryption Pipeline
+
+```text
 plaintext file
-   ↓ AES-256-GCM
+  ↓ envelope / payload protection
 ciphertext + nonce
-   ↓ ML-KEM (Kyber)
+  ↓ ML-KEM wrapping
 wrapped encryption keys
-   ↓ Canonical Envelope
+  ↓ canonical envelope
 PQC-verifiable structure
-   ↓ Optional Arweave anchor
+  ↓ optional Arweave anchor
+hash-anchored evidence
+```
 
+Everything is designed to be tamper-evident and verifiable. Some production flows are still evolving toward full browser-side zero-trust PQ execution.
 
-Everything is quantum-resistant, tamper-evident, and verifiable.
+## 🧪 Backend Setup
 
-🧪 Backend Setup
+```bash
 cd backend-rs
 cargo build
-cargo run
+cargo run -- server
+```
 
+Default local server:
 
-Default server:
+```text
+http://127.0.0.1:4100
+```
 
-http://localhost:4000
+Use `.env.example` as the environment template for:
 
+- Supabase Postgres
+- Supabase Storage
+- PUBLIC_APP_URL
+- Resend
+- Twilio
+- Arweave / Bundlr-style anchoring
 
-CLI examples:
+## CLI Examples
 
-cargo run -- doc upload file.txt
-cargo run -- doc envelope-create --input file.txt
+```bash
+cargo run -- doc repair-storage-paths
 cargo run -- c2c list
-cargo run -- c2c anchor <event-id>
+cargo run -- wallet show
+```
 
 ## 🌌 Use Cases
 
-Secure document drafting
-
-Encrypted communication
-
-Multi-chain file transfer
-
-Legal, medical, financial records
-
-Collaboration with provable custody
-
-Post-quantum secure archives
-
-Blockchain ecosystem file exchange
+- Secure document drafting
+- Encrypted communication
+- Multi-chain file transfer
+- Legal, medical, and financial records
+- Collaboration with provable custody
+- Post-quantum secure archives
+- Blockchain ecosystem file exchange
+- Human and AI agent review flows
 
 ## ⚖️ License
 
 MIT (subject to change)
-
-
-## 🌐 TIDBIT-share-WEAVE
-
-Zero-trust. Post-quantum encrypted. Wallet-connected file custody.
-
-

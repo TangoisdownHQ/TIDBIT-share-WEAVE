@@ -1,36 +1,166 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Document History</title>
-    <script src="app.js"></script>
+  <meta charset="utf-8">
+  <title>TIDBIT · Document Details</title>
+  <script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<h1>Document History</h1>
-<button onclick="logout()">Logout</button>
+  <div class="container">
+    <section class="panel hero compact-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Document Details</p>
+        <h1 id="detailTitle">Loading document…</h1>
+        <p id="detailSubtitle" class="hero-text">Detailed custody view, sharing, versioning, preview, and evidence export.</p>
+      </div>
+      <div class="hero-actions">
+        <a class="button-link" href="/dashboard.html">Home</a>
+      </div>
+    </section>
 
-<div id="history"></div>
+    <section class="grid two-up">
+      <div class="panel">
+        <h3>Document Snapshot</h3>
+        <div id="detailMeta" class="session-card">Loading metadata…</div>
+        <div class="doc-actions top-gap">
+          <button id="detailReviewBtn" class="button-primary">Review</button>
+          <button id="detailDownloadBtn">Download</button>
+          <button id="detailShareBtn">Create signing link</button>
+          <button id="detailVersionBtn">Create version</button>
+          <button id="detailEvidenceBtn">Export evidence</button>
+          <a class="button-link" href="/dashboard.html">Home</a>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Version / Edit</h3>
+        <div id="versionState" class="share-state">Select a version operation below.</div>
+        <div class="grid two-up compact">
+          <div class="form-row">
+            <label for="versionFile">Updated file</label>
+            <input type="file" id="versionFile" />
+          </div>
+          <div class="form-row">
+            <label for="versionLabel">Version label</label>
+            <input id="versionLabel" placeholder="Amended contract v2, revised evidence set..." />
+          </div>
+        </div>
+        <label class="toggle-row" for="versionAnchor">
+          <input type="checkbox" id="versionAnchor" />
+          <span>Anchor this version to Arweave</span>
+        </label>
+        <div class="form-row">
+          <label for="versionChangeSummary">Change summary</label>
+          <textarea id="versionChangeSummary" rows="3" placeholder="What changed between before and after snapshots?"></textarea>
+        </div>
+        <div class="action-row">
+          <button id="createVersionBtn" class="button-primary">Create version</button>
+        </div>
+        <pre id="versionResult" class="muted">No version created yet.</pre>
+      </div>
+    </section>
 
-<script>
-async function load() {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h3>Working Preview</h3>
+          <p class="muted">Open a large preview and review the current document version.</p>
+        </div>
+        <div class="doc-actions">
+          <button id="detailEnlargeBtn">Enlarge</button>
+          <button id="detailOpenReviewBtn">Open review page</button>
+        </div>
+      </div>
+      <div id="detailPreview" class="preview-shell">
+        <div class="preview-fallback"><strong>Loading preview…</strong></div>
+      </div>
+    </section>
 
-    const events = await apiGet("/c2c/events");
+    <section class="grid two-up">
+      <div class="panel">
+        <h3>Lineage</h3>
+        <div id="detailLineage">Loading lineage…</div>
+      </div>
+      <div class="panel">
+        <h3>Shares</h3>
+        <div id="detailShares">Loading shares…</div>
+      </div>
+    </section>
 
-    const filtered = events.filter(e =>
-        e.payload?.doc_hash === id || e.logical_doc_id === id
-    );
+    <section class="panel">
+      <h3>Custody Timeline</h3>
+      <div id="history">Loading history…</div>
+    </section>
+  </div>
 
-    document.getElementById("history").innerHTML =
-        filtered.map(e => `
-            <div>
-                ${e.kind} | ${e.id} | ${e.timestamp}
-            </div>
-        `).join("");
-}
+  <section id="shareModal" class="modal-shell hidden" aria-hidden="true">
+    <div class="modal-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Signing Link</p>
+          <h3 id="shareModalTitle">Create signing link</h3>
+        </div>
+        <button type="button" class="button-secondary" id="closeShareModal">Close</button>
+      </div>
 
-load();
-</script>
+      <div id="shareModalState" class="share-state">No document selected.</div>
+
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalRecipientName">Recipient name</label>
+          <input id="modalRecipientName" placeholder="Signer full name" />
+        </div>
+        <div class="form-row">
+          <label for="modalRecipientWallet">Recipient wallet</label>
+          <input id="modalRecipientWallet" placeholder="0x... optional" />
+        </div>
+      </div>
+
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalRecipientEmail">Email</label>
+          <input id="modalRecipientEmail" type="email" placeholder="signer@example.com" />
+        </div>
+        <div class="form-row">
+          <label for="modalRecipientPhone">Phone / SMS</label>
+          <input id="modalRecipientPhone" type="tel" placeholder="+1 555 555 5555" />
+        </div>
+      </div>
+
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalAgentHandle">AI agent / automation handle</label>
+          <input id="modalAgentHandle" placeholder="agent://legal-review-bot or workflow id" />
+        </div>
+        <div class="form-row">
+          <label for="modalShareChannel">Share helper</label>
+          <select id="modalShareChannel">
+            <option value="email">Email</option>
+            <option value="sms">SMS</option>
+            <option value="whatsapp">WhatsApp</option>
+            <option value="telegram">Telegram</option>
+            <option value="linkedin">LinkedIn</option>
+            <option value="x">X / Twitter</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <label for="modalShareNote">Share note</label>
+        <textarea id="modalShareNote" rows="4" placeholder="Review, approve, sign, or pass to an AI agent workflow."></textarea>
+      </div>
+
+      <div class="doc-actions">
+        <button id="shareBtn" class="button-primary">Create signing link</button>
+        <a id="emailShareLink" class="button-link disabled" href="#" aria-disabled="true">Email</a>
+        <a id="smsShareLink" class="button-link disabled" href="#" aria-disabled="true">SMS</a>
+        <a id="socialShareLink" class="button-link disabled" href="#" aria-disabled="true" target="_blank" rel="noreferrer">Social</a>
+        <button id="copySigningLink" type="button">Copy signing link</button>
+        <button id="copyAgentPayload" type="button">Copy AI payload</button>
+      </div>
+
+      <pre id="shareResult" class="muted">No share created yet.</pre>
+    </div>
+  </section>
 </body>
 </html>
-

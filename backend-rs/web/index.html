@@ -1,76 +1,36 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>TIDBIT – Login</title>
+    <title>TIDBIT – LOGIN</title>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="app.js" defer></script>
-
-    <style>
-        body {
-            margin: 0;
-            height: 100vh;
-            background: #0e0e0e;
-            color: #e0e0e0;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .container {
-            background: #161616;
-            border-radius: 12px;
-            padding: 32px;
-            width: 420px;
-            box-shadow: 0 0 40px rgba(0,0,0,0.8);
-            text-align: center;
-        }
-
-        h1 {
-            margin-bottom: 24px;
-            font-weight: 600;
-            letter-spacing: 1px;
-        }
-
-        button {
-            width: 100%;
-            padding: 14px;
-            margin-top: 16px;
-            background: #1f1f1f;
-            border: 1px solid #333;
-            color: #fff;
-            font-size: 15px;
-            border-radius: 8px;
-            cursor: pointer;
-        }
-
-        button:hover {
-            background: #2a2a2a;
-        }
-
-        p {
-            margin-top: 20px;
-            font-size: 13px;
-            color: #999;
-        }
-
-        #status {
-            margin-top: 12px;
-            font-size: 13px;
-            color: #aaa;
-        }
-    </style>
+    <link rel="stylesheet" href="/style.css">
 </head>
 
-<body>
-    <div class="container">
-        <h1>TIDBIT – share - WEAVE</h1>
+<body class="landing-body">
+    <div class="container landing-shell">
+        <section class="panel landing-panel">
+            <p class="eyebrow">Wallet-Native Custody</p>
+            <h1>TIDBIT-share-WEAVE</h1>
+            <p class="hero-text">
+                A zero-trust workspace for uploading, verifying, signing, and sharing files with cryptographic provenance.
+            </p>
+            <div class="landing-points">
+                <span>Post-quantum aligned</span>
+                <span>Signed custody events</span>
+                <span>Supabase storage + Postgres index</span>
+            </div>
 
-        <button id="login-metamask">Login with MetaMask</button>
-        <div id="status"></div>
-
-        <p>More methods (Phantom, hardware wallet, PQC identity) coming soon.</p>
+            <div class="auth-login-row">
+                <select id="walletProvider" aria-label="Wallet provider">
+                    <option value="metamask">MetaMask</option>
+                    <option value="phantom">Phantom</option>
+                </select>
+                <button id="login-wallet" class="button-primary">Login</button>
+            </div>
+            <div id="status" class="muted"></div>
+        </section>
     </div>
 </body>
 </html>
-

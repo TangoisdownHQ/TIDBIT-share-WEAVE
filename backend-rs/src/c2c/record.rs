@@ -3,7 +3,7 @@
 use crate::c2c::event::new_doc_event;
 use crate::c2c::store::store_local_event;
 use crate::c2c::types::{C2CEvent, C2CEventKind};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 /// Record a "document uploaded" C2C event.
 pub fn record_upload_event(
@@ -31,6 +31,26 @@ pub fn record_sign_event(actor_wallet: String, doc_hash_hex: String) -> AppResul
         None,
         None,
     );
+    store_local_event(&ev)?;
+    Ok(ev)
+}
+
+/// Record a "document shared" C2C event.
+pub fn record_share_event(
+    from_wallet: String,
+    to_wallet: String,
+    envelope_id: String,
+) -> Result<C2CEvent, AppError> {
+    let ev = new_doc_event(
+        from_wallet,
+        C2CEventKind::DocumentShared,
+        envelope_id,
+        None,
+        Some(serde_json::json!({
+            "to": to_wallet
+        })),
+    );
+
     store_local_event(&ev)?;
     Ok(ev)
 }
