@@ -1034,6 +1034,12 @@ async fn list_docs_handler(
             d.mime_type,
             d.parent_id,
             d.arweave_tx,
+            (
+              select max(e.created_at)
+              from document_events e
+              where e.doc_id = d.id
+                and e.event_type in ('SIGN', 'ENVELOPE_COMPLETED', 'AGENT_SIGN')
+            ) as last_signed_at,
             case when d.owner_wallet = $1 then 'owned' else 'shared' end as access_kind
         from documents d
         where d.is_deleted = false
@@ -1080,6 +1086,7 @@ async fn list_docs_handler(
                     "mime_type": r.get::<Option<String>,_>("mime_type"),
                     "parent_id": r.get::<Option<uuid::Uuid>,_>("parent_id"),
                     "arweave_tx": r.get::<Option<String>,_>("arweave_tx"),
+                    "last_signed_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_signed_at"),
                     "access_kind": r.get::<String,_>("access_kind")
                 })
             })
@@ -1315,6 +1322,12 @@ async fn export_doc_evidence_handler(
     let doc_row = sqlx::query(
         r#"
         select id, owner_wallet, hash_hex, label, file_size, mime_type, storage_path, version, parent_id, arweave_tx, created_at
+             , (
+                 select max(e.created_at)
+                 from document_events e
+                 where e.doc_id = documents.id
+                   and e.event_type in ('SIGN', 'ENVELOPE_COMPLETED', 'AGENT_SIGN')
+               ) as last_signed_at
         from documents
         where id = $1
           and is_deleted = false
@@ -1420,7 +1433,8 @@ async fn export_doc_evidence_handler(
             "version": doc_row.get::<i32,_>("version"),
             "parent_id": doc_row.get::<Option<uuid::Uuid>,_>("parent_id"),
             "arweave_tx": doc_row.get::<Option<String>,_>("arweave_tx"),
-            "created_at": doc_row.get::<chrono::DateTime<chrono::Utc>,_>("created_at")
+            "created_at": doc_row.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+            "last_signed_at": doc_row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_signed_at")
         },
         "access": {
             "owner_wallet": access.owner_wallet,

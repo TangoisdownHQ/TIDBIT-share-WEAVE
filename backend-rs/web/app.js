@@ -367,6 +367,7 @@ async function loadDocuments() {
       <div class="doc-meta">Version: v${doc.version}</div>
       <div class="doc-meta">Type: ${doc.mime_type || "application/octet-stream"}</div>
       <div class="doc-meta">Created: ${new Date(doc.created_at).toLocaleString()}</div>
+      <div class="doc-meta">Last signed: ${doc.last_signed_at ? new Date(doc.last_signed_at).toLocaleString() : "not signed yet"}</div>
       <div class="doc-meta">Arweave: ${doc.arweave_tx || "not anchored"}</div>
       <div class="doc-actions">
         <a class="button-link" href="/document.html?id=${encodeURIComponent(doc.id)}">Details</a>
@@ -1317,6 +1318,7 @@ async function loadDocumentDetailsPage() {
     <div class="doc-meta">Parent: ${escapeHtml(currentDocumentDetails.parent_id || "root document")}</div>
     <div class="doc-meta">Owner: ${escapeHtml(evidence.document?.owner_wallet || "")}</div>
     <div class="doc-meta">Created: ${new Date(evidence.document?.created_at).toLocaleString()}</div>
+    <div class="doc-meta">Last signed: ${evidence.document?.last_signed_at ? new Date(evidence.document.last_signed_at).toLocaleString() : "not signed yet"}</div>
     <div class="doc-meta">Arweave: ${escapeHtml(currentDocumentDetails.arweave_tx || "not anchored")}</div>
   `;
   previewRoot.innerHTML = "";
