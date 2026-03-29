@@ -24,11 +24,13 @@
         <h3>Document Snapshot</h3>
         <div id="detailMeta" class="session-card">Loading metadata…</div>
         <div class="doc-actions top-gap">
+          <a class="button-link" href="/dashboard.html">Back</a>
           <button id="detailReviewBtn" class="button-primary">Review</button>
           <button id="detailDownloadBtn">Download</button>
           <button id="detailShareBtn">Create signing link</button>
           <button id="detailVersionBtn">Create version</button>
           <button id="detailEvidenceBtn">Export evidence</button>
+          <button id="detailDeleteBtn" class="button-danger">Delete</button>
           <a class="button-link" href="/dashboard.html">Home</a>
         </div>
       </div>
@@ -114,6 +116,14 @@
           <label for="modalRecipientWallet">Recipient wallet</label>
           <input id="modalRecipientWallet" placeholder="0x... optional" />
         </div>
+      </div>
+
+      <div class="form-row">
+        <label for="modalRecipientChain">Recipient wallet network</label>
+        <select id="modalRecipientChain">
+          <option value="evm">MetaMask / EVM</option>
+          <option value="sol">Phantom / Solana</option>
+        </select>
       </div>
 
       <div class="grid two-up compact">

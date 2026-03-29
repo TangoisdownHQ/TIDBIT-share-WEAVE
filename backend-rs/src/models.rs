@@ -37,6 +37,7 @@ pub struct SignRequest {
 #[derive(Deserialize)]
 pub struct ShareRequest {
     pub recipient_wallet: Option<String>,
+    pub recipient_chain: Option<String>,
     pub recipient_name: Option<String>,
     pub note: Option<String>,
     pub signature: Option<String>,
@@ -95,4 +96,9 @@ pub struct AgentVersionRequest {
     pub content_b64: String,
     pub change_summary: Option<String>,
     pub anchor_to_arweave: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct InboxActionRequest {
+    pub action: String,
 }

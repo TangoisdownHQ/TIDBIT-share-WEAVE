@@ -4,6 +4,7 @@ const API = window.location.origin.startsWith("http")
   ? window.location.origin
   : "http://127.0.0.1:4100";
 let currentWallet = null;
+let currentChain = null;
 let selectedShareDoc = null;
 let reviewDocument = null;
 let selectedVersionParent = null;
@@ -41,6 +42,78 @@ function getPhantomProvider() {
     return window.solana;
   }
   return null;
+}
+
+function inferWalletChainFromAddress(address) {
+  const trimmed = String(address || "").trim();
+  if (!trimmed) return null;
+  return trimmed.startsWith("0x") ? "evm" : "sol";
+}
+
+function bytesToBase64(bytes) {
+  const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = "";
+  array.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  return btoa(binary);
+}
+
+async function signTextWithActiveWallet(message) {
+  if (!currentWallet || !currentChain) {
+    throw new Error("Active wallet session missing.");
+  }
+
+  if (currentChain === "sol") {
+    const provider = getPhantomProvider();
+    if (!provider) {
+      throw new Error("Phantom is required to sign with Solana.");
+    }
+
+    const encoded = new TextEncoder().encode(message);
+    const signed = await provider.signMessage(encoded, "utf8");
+    const signatureBytes = signed?.signature || signed;
+    return {
+      signature: bytesToBase64(signatureBytes),
+      signature_type: "sol_ed25519",
+      wallet: provider.publicKey?.toString?.() || currentWallet,
+    };
+  }
+
+  const provider = getMetaMaskProvider();
+  if (!provider) {
+    throw new Error("MetaMask is required to sign.");
+  }
+
+  const signature = await provider.request({
+    method: "personal_sign",
+    params: [message, currentWallet],
+  });
+
+  return {
+    signature,
+    signature_type: "evm_personal_sign",
+    wallet: currentWallet,
+  };
+}
+
+function confirmRecipientNetwork(recipient, recipientChain) {
+  if (!recipient) return true;
+  const detectedChain = inferWalletChainFromAddress(recipient);
+  const selectedChain = recipientChain || detectedChain || "unknown";
+  const mismatch = detectedChain && selectedChain && detectedChain !== selectedChain;
+  const message = [
+    "Confirm recipient wallet network before creating this share.",
+    "",
+    `Recipient wallet: ${recipient}`,
+    `Selected network: ${selectedChain}`,
+    `Detected address format: ${detectedChain || "unknown"}`,
+    "",
+    mismatch
+      ? "The selected network does not match the wallet format. Continue only if you are certain."
+      : "This share will be routed only to the selected wallet network.",
+  ].join("\n");
+  return window.confirm(message);
 }
 
 // ================== AUTH ==================
@@ -270,6 +343,12 @@ async function loadSessionInfo() {
     `;
   }
   currentWallet = data.wallet;
+  currentChain = data.chain;
+  const signatureMode = document.getElementById("signatureMode");
+  if (signatureMode && !signatureMode.dataset.userSelected) {
+    signatureMode.value = currentChain === "sol" ? "sol_ed25519" : "evm_personal_sign";
+    toggleSignatureMode();
+  }
 }
 
 async function loadDocuments() {
@@ -282,6 +361,7 @@ async function loadDocuments() {
     div.className = "doc-card";
     div.innerHTML = `
       <h4>${doc.label || "(untitled document)"}</h4>
+      <div class="doc-meta">Access: ${doc.access_kind === "shared" ? "Shared with you" : "Owned by you"}</div>
       <div class="doc-meta">Hash: ${doc.hash_hex}</div>
       <div class="doc-meta">Document ID: ${doc.id}</div>
       <div class="doc-meta">Version: v${doc.version}</div>
@@ -318,21 +398,28 @@ async function loadOverview() {
     <article class="stat-card"><strong>${counts.total_versions || 0}</strong><span class="muted">Linked versions</span></article>
     <article class="stat-card"><strong>${counts.anchored_docs || 0}</strong><span class="muted">Arweave anchored</span></article>
     <article class="stat-card"><strong>${counts.total_shares || 0}</strong><span class="muted">Shares created</span></article>
+    <article class="stat-card"><strong>${counts.inbox_pending || 0}</strong><span class="muted">Inbox waiting</span></article>
   `;
 }
 
 function switchDashboardTab(tabName) {
   const homePanel = document.getElementById("homeTabPanel");
   const docsPanel = document.getElementById("docsTabPanel");
+  const sharedPanel = document.getElementById("sharedTabPanel");
   const homeBtn = document.getElementById("homeTabBtn");
   const docsBtn = document.getElementById("docsTabBtn");
-  if (!homePanel || !docsPanel || !homeBtn || !docsBtn) return;
+  const sharedBtn = document.getElementById("sharedTabBtn");
+  if (!homePanel || !docsPanel || !sharedPanel || !homeBtn || !docsBtn || !sharedBtn) return;
 
-  const showHome = tabName !== "docs";
+  const showHome = tabName === "home";
+  const showDocs = tabName === "docs";
+  const showShared = tabName === "shared";
   homePanel.classList.toggle("hidden", !showHome);
-  docsPanel.classList.toggle("hidden", showHome);
+  docsPanel.classList.toggle("hidden", !showDocs);
+  sharedPanel.classList.toggle("hidden", !showShared);
   homeBtn.classList.toggle("button-primary", showHome);
-  docsBtn.classList.toggle("button-primary", !showHome);
+  docsBtn.classList.toggle("button-primary", showDocs);
+  sharedBtn.classList.toggle("button-primary", showShared);
 }
 
 // ================== UPLOAD ==================
@@ -436,9 +523,11 @@ async function deleteDoc(id) {
 // ================== SIGN ==================
 async function signDocument(doc) {
   const message = buildDocumentSignatureMessage(doc);
-  const signatureMode = document.getElementById("signatureMode")?.value || "evm_personal_sign";
+  const signatureMode =
+    document.getElementById("signatureMode")?.value ||
+    (currentChain === "sol" ? "sol_ed25519" : "evm_personal_sign");
 
-  if (signatureMode === "pq_dilithium3") {
+  if (signatureMode === "pq_mldsa65") {
     const pqPublicKey = document.getElementById("pqPublicKey")?.value.trim();
     const pqSignature = document.getElementById("pqSignature")?.value.trim();
 
@@ -449,29 +538,40 @@ async function signDocument(doc) {
 
     await apiPost(`/api/doc/${doc.id}/sign`, {
       signature: pqSignature,
-      signature_type: "pq_dilithium3",
+      signature_type: "pq_mldsa65",
       pq_public_key_b64: pqPublicKey,
     });
+    await afterDocumentSigned(doc.id);
     alert("PQ signature verified and recorded");
     return;
   }
 
-  const provider = getMetaMaskProvider();
-  if (!provider) {
-    alert("MetaMask is required to sign.");
+  if (signatureMode === "sol_ed25519" && currentChain !== "sol") {
+    alert("Phantom / Solana signing requires a Solana session.");
+    return;
+  }
+  if (signatureMode === "evm_personal_sign" && currentChain === "sol") {
+    alert("This session is using Phantom / Solana. Switch the signing mode to Phantom / Solana.");
     return;
   }
 
-  const signature = await provider.request({
-    method: "personal_sign",
-    params: [message, currentWallet],
-  });
+  const signed = await signTextWithActiveWallet(message);
 
   await apiPost(`/api/doc/${doc.id}/sign`, {
-    signature,
-    signature_type: "evm_personal_sign",
+    signature: signed.signature,
+    signature_type: signed.signature_type,
   });
+  await afterDocumentSigned(doc.id);
   alert("Signed & recorded");
+}
+
+async function afterDocumentSigned(docId) {
+  if (document.getElementById("overviewStats")) await loadOverview();
+  if (document.getElementById("docList")) await loadDocuments();
+  if (document.getElementById("inboxList")) await loadInbox();
+  if (document.getElementById("sharedList")) await loadSharedFiles();
+  if (document.getElementById("reviewPreview")) await loadReviewPage();
+  if (document.getElementById("detailMeta")) await loadDocumentDetailsPage();
 }
 
 function buildDocumentSignatureMessage(doc) {
@@ -500,21 +600,53 @@ async function loadInbox() {
         <div class="doc-meta">Envelope ID: ${item.envelope_id}</div>
         <div class="doc-meta">Version: v${item.version}</div>
         <div class="doc-meta">Note: ${item.note || "No note"}</div>
+        <div class="doc-meta">Status: ${item.status || "pending"}</div>
         <div class="doc-actions">
           <button data-action="review">Review</button>
           <button data-action="download">Download</button>
           <button data-action="sign">Sign</button>
+          <button class="button-danger" data-action="delete">Delete</button>
         </div>
       `;
-      card.querySelector('[data-action="review"]').onclick = () => openReview(item.doc_id);
+      card.querySelector('[data-action="review"]').onclick = () => reviewInboxDocument(item).catch((err) => alert(err.message));
       card.querySelector('[data-action="download"]').onclick = () =>
-        downloadSharedDocument(item.doc_id, item.hash_hex, item.label).catch((err) => alert(err.message));
+        downloadSharedDocument(item).catch((err) => alert(err.message));
       card.querySelector('[data-action="sign"]').onclick = () =>
-        signSharedDocument(item.doc_id, item.hash_hex, item.label, item.version).catch((err) => alert(err.message));
+        signSharedDocument(item).catch((err) => alert(err.message));
+      card.querySelector('[data-action="delete"]').onclick = () =>
+        dismissInboxDocument(item).catch((err) => alert(err.message));
       box.appendChild(card);
     });
   } catch (err) {
     box.innerHTML = `<div class='inbox-card'><strong>Inbox unavailable.</strong><div class='doc-meta'>${err.message}</div></div>`;
+  }
+}
+
+async function loadSharedFiles() {
+  const box = document.getElementById("sharedList");
+  if (!box) return;
+  try {
+    const items = await apiGet("/api/shared");
+    box.innerHTML = items.length ? "" : "<div class='inbox-card'><strong>No shared files yet.</strong><div class='doc-meta'>Files you send out will appear here.</div></div>";
+
+    items.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = "inbox-card";
+      card.innerHTML = `
+        <h4>${item.label || "(shared document)"}</h4>
+        <div class="doc-meta">Recipient: ${item.recipient_name || item.recipient_email || item.recipient_phone || item.recipient_wallet || "unknown"}</div>
+        <div class="doc-meta">Network: ${item.recipient_chain || "n/a"}</div>
+        <div class="doc-meta">Status: ${item.status}</div>
+        <div class="doc-meta">Version: v${item.version}</div>
+        <div class="doc-meta">Created: ${new Date(item.created_at).toLocaleString()}</div>
+        <div class="doc-actions">
+          <a class="button-link" href="/document.html?id=${encodeURIComponent(item.doc_id)}">Open document</a>
+        </div>
+      `;
+      box.appendChild(card);
+    });
+  } catch (err) {
+    box.innerHTML = `<div class='inbox-card'><strong>Shared files unavailable.</strong><div class='doc-meta'>${err.message}</div></div>`;
   }
 }
 
@@ -525,6 +657,8 @@ function prepareShare(doc) {
     const el = document.getElementById(id);
     if (el) el.value = "";
   });
+  const recipientChain = document.getElementById("modalRecipientChain");
+  if (recipientChain) recipientChain.value = currentChain === "sol" ? "sol" : "evm";
   const stateRoot = document.getElementById("shareModalState");
   if (!stateRoot) return;
   stateRoot.innerHTML = `
@@ -635,11 +769,13 @@ Recipient Wallet: ${recipient}
 Note: ${note || ""}
 Action: SHARE
 Wallet: ${currentWallet}
+Wallet Chain: ${currentChain || "unknown"}
 Version: ${doc.version || 1}`;
 }
 
 async function shareDocument(docId) {
   const recipient = document.getElementById("modalRecipientWallet").value.trim() || null;
+  const recipientChain = document.getElementById("modalRecipientChain")?.value || null;
   const recipientName = document.getElementById("modalRecipientName")?.value || null;
   const note = document.getElementById("modalShareNote")?.value || null;
   const recipientEmail = document.getElementById("modalRecipientEmail")?.value || null;
@@ -649,21 +785,21 @@ async function shareDocument(docId) {
   if (!recipient && !recipientEmail && !recipientPhone) {
     return alert("Provide a wallet, email, or phone number for the recipient.");
   }
+  if (recipient && !confirmRecipientNetwork(recipient, recipientChain)) {
+    throw new Error("Share canceled while verifying recipient network.");
+  }
 
   let signature = null;
-  const provider = getMetaMaskProvider();
-  if (provider && currentWallet && selectedShareDoc) {
-    signature = await provider.request({
-      method: "personal_sign",
-      params: [
-        buildShareSignatureMessage(selectedShareDoc, recipient || recipientEmail || recipientPhone || "guest", note),
-        currentWallet,
-      ],
-    });
+  if (currentWallet && selectedShareDoc) {
+    const signed = await signTextWithActiveWallet(
+      buildShareSignatureMessage(selectedShareDoc, recipient || recipientEmail || recipientPhone || "guest", note)
+    );
+    signature = signed.signature;
   }
 
   const res = await apiPost(`/api/doc/${docId}/share`, {
     recipient_wallet: recipient,
+    recipient_chain: recipient ? recipientChain : null,
     recipient_name: recipientName,
     note: [note, agentHandle ? `AI agent: ${agentHandle}` : null].filter(Boolean).join("\n"),
     signature,
@@ -671,7 +807,7 @@ async function shareDocument(docId) {
     recipient_phone: recipientPhone,
   });
 
-  return { ...res, recipient_wallet: recipient };
+  return { ...res, recipient_wallet: recipient, recipient_chain: recipient ? recipientChain : null };
 }
 
 async function shareSelectedDocument() {
@@ -683,7 +819,13 @@ async function shareSelectedDocument() {
   const res = await shareDocument(selectedShareDoc.id);
   window.lastShareResult = res;
   setInviteLinks(res, selectedShareDoc);
-  document.getElementById("shareResult").innerText = JSON.stringify(res, null, 2);
+  const summary = [
+    `Status: ${res.status || "created"}`,
+    `Signing URL: ${res.signing_url}`,
+    `Wallet route: ${res.recipient_wallet ? `ready for ${res.recipient_chain || "wallet"} inbox` : "not used"}`,
+    `Provider delivery issues: ${res.delivery_errors?.length || 0}`,
+  ].join("\n");
+  document.getElementById("shareResult").innerText = `${summary}\n\n${JSON.stringify(res, null, 2)}`;
 }
 
 function buildAgentSharePayload(result, doc) {
@@ -753,12 +895,39 @@ async function createVersion() {
   }
 }
 
-async function downloadSharedDocument(docId, hashHex, label) {
-  await downloadAndVerify({ id: docId, hash_hex: hashHex, label });
+async function logInboxAction(envelopeId, action) {
+  return apiPost(`/api/inbox/${encodeURIComponent(envelopeId)}/action`, { action });
 }
 
-async function signSharedDocument(docId, hashHex, label, version) {
-  await signDocument({ id: docId, hash_hex: hashHex, label, version });
+async function refreshDashboardData() {
+  if (document.getElementById("overviewStats")) await loadOverview();
+  if (document.getElementById("docList")) await loadDocuments();
+  if (document.getElementById("inboxList")) await loadInbox();
+  if (document.getElementById("sharedList")) await loadSharedFiles();
+}
+
+async function reviewInboxDocument(item) {
+  await logInboxAction(item.envelope_id, "review");
+  await refreshDashboardData();
+  openReview(item.doc_id);
+}
+
+async function downloadSharedDocument(item) {
+  await logInboxAction(item.envelope_id, "download");
+  await downloadAndVerify({ id: item.doc_id, hash_hex: item.hash_hex, label: item.label, version: item.version });
+  await refreshDashboardData();
+}
+
+async function signSharedDocument(item) {
+  await logInboxAction(item.envelope_id, "sign");
+  await signDocument({ id: item.doc_id, hash_hex: item.hash_hex, label: item.label, version: item.version });
+  await refreshDashboardData();
+}
+
+async function dismissInboxDocument(item) {
+  if (!confirm("Remove this shared file from your inbox?")) return;
+  await logInboxAction(item.envelope_id, "delete");
+  await refreshDashboardData();
 }
 
 function openReview(docId) {
@@ -769,15 +938,17 @@ function toggleSignatureMode() {
   const mode = document.getElementById("signatureMode")?.value;
   const pqFields = document.getElementById("pqFields");
   if (!pqFields) return;
-  pqFields.classList.toggle("hidden", mode !== "pq_dilithium3");
+  pqFields.classList.toggle("hidden", mode !== "pq_mldsa65");
 }
 
 function togglePublicSignatureMode() {
   const mode = document.getElementById("publicSignatureMode")?.value;
   const evmFields = document.getElementById("publicEvmFields");
+  const solFields = document.getElementById("publicSolFields");
   const pqFields = document.getElementById("publicPqFields");
   if (evmFields) evmFields.classList.toggle("hidden", mode !== "evm_personal_sign");
-  if (pqFields) pqFields.classList.toggle("hidden", mode !== "pq_dilithium3");
+  if (solFields) solFields.classList.toggle("hidden", mode !== "sol_ed25519");
+  if (pqFields) pqFields.classList.toggle("hidden", mode !== "pq_mldsa65");
 }
 
 function selectFieldTool(kind) {
@@ -1161,6 +1332,10 @@ async function loadDocumentDetailsPage() {
   document.getElementById("detailShareBtn").onclick = () => openShareModal(currentDocumentDetails);
   document.getElementById("detailVersionBtn").onclick = () => document.getElementById("versionFile")?.focus();
   document.getElementById("detailEvidenceBtn").onclick = () => exportEvidence(id, currentDocumentDetails.label || id).catch((err) => alert(err.message));
+  document.getElementById("detailDeleteBtn").onclick = async () => {
+    await deleteDoc(id);
+    window.location.href = "/dashboard.html";
+  };
   document.getElementById("detailEnlargeBtn").onclick = () =>
     showPreviewModal(currentDocumentDetails.label || "Large preview", blob, currentDocumentDetails.mime_type || "application/octet-stream");
 }
@@ -1272,6 +1447,10 @@ async function loadPublicSignPage() {
       })
     );
     updateAnnotationFieldList(window.publicEnvelopeFields);
+    const publicSignatureMode = document.getElementById("publicSignatureMode");
+    if (publicSignatureMode && !publicSignatureMode.dataset.userSelected) {
+      publicSignatureMode.value = envelope.recipient_chain === "sol" ? "sol_ed25519" : "guest_attestation";
+    }
     document.getElementById("publicSignSubmit").disabled = !verified;
     togglePublicSignatureMode();
   } catch (err) {
@@ -1329,7 +1508,31 @@ async function submitPublicEnvelopeSign() {
     payload.signature = signature;
   }
 
-  if (signatureType === "pq_dilithium3") {
+  if (signatureType === "sol_ed25519") {
+    const provider = getPhantomProvider();
+    if (!provider) {
+      alert("Phantom is required for Solana signing.");
+      return;
+    }
+    await provider.connect({ onlyIfTrusted: false }).catch(() => null);
+    const address = provider.publicKey?.toString?.();
+    if (!address) {
+      alert("Phantom wallet address unavailable.");
+      return;
+    }
+    const message =
+      `TIDBIT Public Envelope Signature\n` +
+      `Envelope ID: ${window.publicEnvelope.envelope_id}\n` +
+      `Document ID: ${window.publicEnvelope.doc_id}\n` +
+      `Hash: ${window.publicEnvelope.hash_hex}\n` +
+      `Signer: ${address}\n` +
+      `Version: ${window.publicEnvelope.version}`;
+    const signed = await provider.signMessage(new TextEncoder().encode(message), "utf8");
+    payload.wallet_address = address;
+    payload.signature = bytesToBase64(signed?.signature || signed);
+  }
+
+  if (signatureType === "pq_mldsa65") {
     payload.pq_public_key_b64 = document.getElementById("publicPqPublicKey").value.trim();
     payload.signature = document.getElementById("publicPqSignature").value.trim();
     if (!payload.pq_public_key_b64 || !payload.signature) {
@@ -1367,8 +1570,13 @@ document.addEventListener("DOMContentLoaded", () => {
     loadOverview().catch((err) => alert(err.message));
     loadDocuments();
     loadInbox();
+    loadSharedFiles();
     document.getElementById("homeTabBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("docsTabBtn")?.addEventListener("click", () => switchDashboardTab("docs"));
+    document.getElementById("sharedTabBtn")?.addEventListener("click", () => switchDashboardTab("shared"));
+    document.getElementById("docsBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
+    document.getElementById("inboxBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
+    document.getElementById("sharedBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     switchDashboardTab("home");
     document.getElementById("uploadBtn").onclick = uploadDoc;
     document.getElementById("shareBtn").onclick = shareSelectedDocument;
@@ -1377,7 +1585,10 @@ document.addEventListener("DOMContentLoaded", () => {
   if (document.getElementById("reviewPreview")) {
     loadSessionInfo();
     loadReviewPage();
-    document.getElementById("signatureMode")?.addEventListener("change", toggleSignatureMode);
+    document.getElementById("signatureMode")?.addEventListener("change", (event) => {
+      event.currentTarget.dataset.userSelected = "true";
+      toggleSignatureMode();
+    });
   }
 
   if (document.getElementById("detailMeta")) {
@@ -1403,7 +1614,10 @@ document.addEventListener("DOMContentLoaded", () => {
     loadPublicSignPage();
     document
       .getElementById("publicSignatureMode")
-      ?.addEventListener("change", togglePublicSignatureMode);
+      ?.addEventListener("change", (event) => {
+        event.currentTarget.dataset.userSelected = "true";
+        togglePublicSignatureMode();
+      });
     document.querySelectorAll("[data-field-tool]").forEach((button) => {
       button.addEventListener("click", () => selectFieldTool(button.getAttribute("data-field-tool")));
     });

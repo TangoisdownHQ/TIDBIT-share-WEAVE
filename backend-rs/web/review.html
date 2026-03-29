@@ -46,19 +46,20 @@
           <label for="signatureMode">Signature mode</label>
           <select id="signatureMode">
             <option value="evm_personal_sign">MetaMask / EVM</option>
-            <option value="pq_dilithium3">Dilithium PQ</option>
+            <option value="sol_ed25519">Phantom / Solana</option>
+            <option value="pq_mldsa65">ML-DSA PQ</option>
           </select>
         </div>
         <div id="pqFields" class="grid compact hidden">
           <div class="form-row">
             <label for="pqPublicKey">PQ public key (base64)</label>
-            <textarea id="pqPublicKey" rows="4" placeholder="Paste Dilithium public key"></textarea>
+            <textarea id="pqPublicKey" rows="4" placeholder="Paste ML-DSA public key"></textarea>
           </div>
           <div class="form-row">
             <label for="pqSignature">PQ signed message (base64)</label>
-            <textarea id="pqSignature" rows="6" placeholder="Paste Dilithium signed message blob"></textarea>
+            <textarea id="pqSignature" rows="6" placeholder="Paste ML-DSA signed message blob"></textarea>
           </div>
-          <p class="muted">PQ signing is optional high-assurance mode. Generate the Dilithium signature client-side or from your external signing workflow, then paste it here for verification and recording.</p>
+          <p class="muted">PQ signing is optional high-assurance mode. Generate the ML-DSA signature client-side or from your external signing workflow, then paste it here for verification and recording.</p>
         </div>
       </div>
     </section>

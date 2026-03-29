@@ -23,6 +23,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use base64::Engine;
+use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 use clap::Parser;
 use cli::commands::{auth, c2c as cli_c2c, doc, wallet};
 use cli::parser::{Cli, Commands};
@@ -40,7 +41,7 @@ use crate::identity_web::state::WalletSession;
 use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
 use crate::models::{
     AgentRegisterRequest, AgentSignRequest, AgentVersionRequest, DocumentPolicyUpdateRequest,
-    PublicEnvelopeSignRequest, ShareRequest, SignRequest, SignerAnnotationField,
+    InboxActionRequest, PublicEnvelopeSignRequest, ShareRequest, SignRequest, SignerAnnotationField,
 };
 use crate::crypto::canonical::{
     canonicalize::canonical_json,
@@ -139,6 +140,8 @@ async fn start_server() -> anyhow::Result<()> {
         .connect(&std::env::var("DATABASE_URL")?)
         .await?;
 
+    ensure_runtime_schema(&pool).await?;
+
     println!("Connected to Supabase Postgres");
 
     let storage = SupabaseStorage::new(
@@ -168,6 +171,7 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/agent/register", post(register_agent_handler))
         .route("/api/overview", get(overview_handler))
         .route("/api/doc/list", get(list_docs_handler))
+        .route("/api/shared", get(list_shared_handler))
         .route("/api/doc/:id/events", get(list_doc_events_handler))
         .route("/api/doc/:id/evidence", get(export_doc_evidence_handler))
         .route("/api/doc/:id/evidence/anchor", post(anchor_evidence_bundle_handler))
@@ -184,6 +188,7 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/agent/doc/:id/sign", post(agent_sign_doc_handler))
         .route("/api/agent/doc/:id/version", post(agent_version_doc_handler))
         .route("/api/inbox", get(list_inbox_handler))
+        .route("/api/inbox/:envelope_id/action", post(inbox_action_handler))
         .route("/auth/session", get(session_info_handler))
         .route("/auth/logout", post(logout_handler))
         .nest_service("/", static_files)
@@ -212,8 +217,80 @@ fn wallet_can_access_document(owner_wallet: &str, actor_wallet: &str, is_shared_
     owner_wallet.eq_ignore_ascii_case(actor_wallet) || is_shared_with_actor
 }
 
+fn canonical_chain(chain: &str) -> Option<&'static str> {
+    match chain.trim().to_ascii_lowercase().as_str() {
+        "evm" | "ethereum" | "metamask" => Some("evm"),
+        "sol" | "solana" | "phantom" => Some("sol"),
+        _ => None,
+    }
+}
+
+fn infer_wallet_chain(wallet: &str) -> &'static str {
+    if wallet.trim().starts_with("0x") {
+        "evm"
+    } else {
+        "sol"
+    }
+}
+
+fn normalize_wallet_for_chain(wallet: &str, chain: &str) -> String {
+    let trimmed = wallet.trim();
+    if canonical_chain(chain) == Some("evm") {
+        trimmed.to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn decode_signature_blob(signature: &str) -> Result<Vec<u8>, AppError> {
+    base64::engine::general_purpose::STANDARD
+        .decode(signature.trim())
+        .or_else(|_| bs58::decode(signature.trim()).into_vec())
+        .map_err(|_| AppError::BadRequest("Invalid signature encoding".into()))
+}
+
+fn verify_solana_signature(
+    message: &str,
+    wallet_address: &str,
+    signature: &str,
+) -> Result<(), AppError> {
+    let public_key_bytes = bs58::decode(wallet_address.trim())
+        .into_vec()
+        .map_err(|_| AppError::BadRequest("Invalid Solana wallet address".into()))?;
+    let public_key_array: [u8; 32] = public_key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::BadRequest("Invalid Solana wallet address length".into()))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key_array)
+        .map_err(|_| AppError::BadRequest("Invalid Solana public key".into()))?;
+
+    let signature_bytes = decode_signature_blob(signature)?;
+    let signature_array: [u8; 64] = signature_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::BadRequest("Invalid Solana signature length".into()))?;
+    let parsed_signature = Ed25519Signature::from_bytes(&signature_array);
+
+    verifying_key
+        .verify(message.as_bytes(), &parsed_signature)
+        .map_err(|_| AppError::BadRequest("Invalid Solana signature".into()))
+}
+
+async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
+    sqlx::query("alter table document_shares add column if not exists recipient_chain text")
+        .execute(db)
+        .await?;
+    sqlx::query(
+        "create index if not exists idx_document_shares_recipient_chain_wallet_doc on document_shares (recipient_chain, recipient_wallet, doc_id)",
+    )
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 fn build_share_event_payload(
     recipient_wallet: Option<&str>,
+    recipient_chain: Option<&str>,
     note: Option<&str>,
     envelope_id: uuid::Uuid,
     signature: Option<&str>,
@@ -224,6 +301,7 @@ fn build_share_event_payload(
 ) -> serde_json::Value {
     json!({
         "recipient_wallet": recipient_wallet,
+        "recipient_chain": recipient_chain,
         "recipient_name": recipient_name,
         "note": note,
         "envelope_id": envelope_id,
@@ -343,6 +421,7 @@ async fn load_document_access_record(
     db: &PgPool,
     doc_id: uuid::Uuid,
     actor_wallet: &str,
+    actor_chain: &str,
 ) -> Result<DocumentAccessRecord, AppError> {
     let row = sqlx::query(
         r#"
@@ -361,7 +440,19 @@ async fn load_document_access_record(
             exists (
               select 1
               from document_shares s
-              where s.doc_id = d.id and s.recipient_wallet = $2
+              where s.doc_id = d.id
+                and s.recipient_wallet is not null
+                and (
+                  (coalesce(s.recipient_chain, '') = 'evm' and $3 = 'evm' and lower(s.recipient_wallet) = lower($2))
+                  or
+                  (coalesce(s.recipient_chain, '') = 'sol' and $3 = 'sol' and s.recipient_wallet = $2)
+                  or
+                  (s.recipient_chain is null and (
+                    ($2 like '0x%' and lower(s.recipient_wallet) = lower($2))
+                    or
+                    ($2 not like '0x%' and s.recipient_wallet = $2)
+                  ))
+                )
             ) as shared_with_actor
         from documents d
         where d.id = $1
@@ -370,6 +461,7 @@ async fn load_document_access_record(
     )
     .bind(doc_id)
     .bind(actor_wallet)
+    .bind(actor_chain)
     .fetch_optional(db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -760,6 +852,37 @@ async fn dispatch_share_deliveries(
     (outcomes, errors)
 }
 
+fn derive_share_status(
+    has_wallet_route: bool,
+    has_provider_request: bool,
+    deliveries: &[DeliveryOutcome],
+    delivery_errors: &[String],
+) -> &'static str {
+    if has_wallet_route {
+        if has_provider_request
+            && (delivery_errors.iter().next().is_some()
+                || deliveries.iter().any(|outcome| outcome.status != "sent" && outcome.channel != "wallet"))
+        {
+            "wallet_shared_with_delivery_issues"
+        } else {
+            "wallet_shared"
+        }
+    } else if deliveries.iter().any(|outcome| outcome.status == "sent") {
+        "sent"
+    } else if has_provider_request {
+        "delivery_issue"
+    } else {
+        "created"
+    }
+}
+
+fn active_inbox_status(status: &str) -> bool {
+    matches!(
+        status,
+        "wallet_shared" | "wallet_shared_with_delivery_issues" | "sent" | "created" | "delivery_issue" | "opened"
+    )
+}
+
 async fn create_document_record(
     st: &AppState,
     owner_wallet: &str,
@@ -892,17 +1015,54 @@ async fn list_docs_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = normalize_wallet_for_chain(
+        &session.wallet,
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
+    );
+    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let rows = sqlx::query(
         r#"
-        select id, owner_wallet, hash_hex, label, created_at, version, mime_type, parent_id, arweave_tx
-        from documents
-        where owner_wallet = $1 and is_deleted = false
-        order by created_at desc
+        select
+            d.id,
+            d.owner_wallet,
+            d.hash_hex,
+            d.label,
+            d.created_at,
+            d.version,
+            d.mime_type,
+            d.parent_id,
+            d.arweave_tx,
+            case when d.owner_wallet = $1 then 'owned' else 'shared' end as access_kind
+        from documents d
+        where d.is_deleted = false
+          and (
+            d.owner_wallet = $1
+            or exists (
+              select 1
+              from document_shares s
+              where s.doc_id = d.id
+                and s.recipient_wallet is not null
+                and s.status not in ('dismissed')
+                and (
+                  (coalesce(s.recipient_chain, '') = 'evm' and $2 = 'evm' and lower(s.recipient_wallet) = lower($1))
+                  or
+                  (coalesce(s.recipient_chain, '') = 'sol' and $2 = 'sol' and s.recipient_wallet = $1)
+                  or
+                  (s.recipient_chain is null and (
+                    ($1 like '0x%' and lower(s.recipient_wallet) = lower($1))
+                    or
+                    ($1 not like '0x%' and s.recipient_wallet = $1)
+                  ))
+                )
+            )
+          )
+        order by d.created_at desc
         "#,
     )
     .bind(wallet)
+    .bind(chain)
     .fetch_all(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -919,7 +1079,63 @@ async fn list_docs_handler(
                     "version": r.get::<i32,_>("version"),
                     "mime_type": r.get::<Option<String>,_>("mime_type"),
                     "parent_id": r.get::<Option<uuid::Uuid>,_>("parent_id"),
-                    "arweave_tx": r.get::<Option<String>,_>("arweave_tx")
+                    "arweave_tx": r.get::<Option<String>,_>("arweave_tx"),
+                    "access_kind": r.get::<String,_>("access_kind")
+                })
+            })
+            .collect(),
+    ))
+}
+
+async fn list_shared_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+
+    let rows = sqlx::query(
+        r#"
+        select
+            s.doc_id,
+            s.envelope_id,
+            s.recipient_wallet,
+            s.recipient_chain,
+            s.recipient_name,
+            s.recipient_email,
+            s.recipient_phone,
+            s.status,
+            s.created_at,
+            d.label,
+            d.hash_hex,
+            d.version
+        from document_shares s
+        join documents d on d.id = s.doc_id
+        where s.sender_wallet = $1
+          and d.is_deleted = false
+        order by s.created_at desc
+        "#,
+    )
+    .bind(session.wallet)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| {
+                json!({
+                    "doc_id": r.get::<uuid::Uuid,_>("doc_id"),
+                    "envelope_id": r.get::<uuid::Uuid,_>("envelope_id"),
+                    "recipient_wallet": r.get::<Option<String>,_>("recipient_wallet"),
+                    "recipient_chain": r.get::<Option<String>,_>("recipient_chain"),
+                    "recipient_name": r.get::<Option<String>,_>("recipient_name"),
+                    "recipient_email": r.get::<Option<String>,_>("recipient_email"),
+                    "recipient_phone": r.get::<Option<String>,_>("recipient_phone"),
+                    "status": r.get::<String,_>("status"),
+                    "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+                    "label": r.get::<Option<String>,_>("label"),
+                    "hash_hex": r.get::<String,_>("hash_hex"),
+                    "version": r.get::<i32,_>("version")
                 })
             })
             .collect(),
@@ -930,7 +1146,12 @@ async fn overview_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = normalize_wallet_for_chain(
+        &session.wallet,
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
+    );
+    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let counts = sqlx::query(
         r#"
@@ -949,12 +1170,28 @@ async fn overview_handler(
 
     let share_counts = sqlx::query(
         r#"
-        select count(*) as total_shares
+        select
+            count(*) filter (where sender_wallet = $1) as total_shares,
+            count(*) filter (
+                where recipient_wallet is not null
+                  and status in ('wallet_shared', 'wallet_shared_with_delivery_issues', 'sent', 'created', 'delivery_issue', 'opened')
+                  and (
+                    (coalesce(recipient_chain, '') = 'evm' and $2 = 'evm' and lower(recipient_wallet) = lower($1))
+                    or
+                    (coalesce(recipient_chain, '') = 'sol' and $2 = 'sol' and recipient_wallet = $1)
+                    or
+                    (recipient_chain is null and (
+                      ($1 like '0x%' and lower(recipient_wallet) = lower($1))
+                      or
+                      ($1 not like '0x%' and recipient_wallet = $1)
+                    ))
+                  )
+            ) as inbox_pending
         from document_shares
-        where sender_wallet = $1
         "#,
     )
     .bind(&wallet)
+    .bind(chain)
     .fetch_one(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -1001,7 +1238,8 @@ async fn overview_handler(
             "total_docs": counts.get::<i64,_>("total_docs"),
             "total_versions": counts.get::<i64,_>("total_versions"),
             "anchored_docs": counts.get::<i64,_>("anchored_docs"),
-            "total_shares": share_counts.get::<i64,_>("total_shares")
+            "total_shares": share_counts.get::<i64,_>("total_shares"),
+            "inbox_pending": share_counts.get::<i64,_>("inbox_pending")
         },
         "recent_docs": recent_docs.into_iter().map(|row| json!({
             "id": row.get::<uuid::Uuid,_>("id"),
@@ -1033,38 +1271,9 @@ async fn list_doc_events_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
-
-    let access_row = sqlx::query(
-        r#"
-        select
-            d.owner_wallet,
-            exists (
-              select 1
-              from document_shares s
-              where s.doc_id = d.id and s.recipient_wallet = $2
-            ) as shared_with_actor
-        from documents d
-        where d.id = $1
-          and d.is_deleted = false
-        "#,
-    )
-    .bind(id)
-        .bind(&wallet)
-        .fetch_optional(&st.db)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let Some(access_row) = access_row else {
-        return Err(AppError::NotFound("Document not found".into()));
-    };
-
-    let owner_wallet: String = access_row.get("owner_wallet");
-    let shared_with_actor: bool = access_row.get("shared_with_actor");
-
-    if !wallet_can_access_document(&owner_wallet, &wallet, shared_with_actor) {
-        return Err(AppError::NotFound("Document not found".into()));
-    }
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = session.wallet.clone();
+    load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     let rows = sqlx::query(
         r#"
@@ -1099,8 +1308,9 @@ async fn export_doc_evidence_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
-    let access = load_document_access_record(&st.db, id, &wallet).await?;
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = session.wallet.clone();
+    let access = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     let doc_row = sqlx::query(
         r#"
@@ -1165,6 +1375,7 @@ async fn export_doc_evidence_handler(
             id,
             sender_wallet,
             recipient_wallet,
+            recipient_chain,
             recipient_name,
             recipient_email,
             recipient_phone,
@@ -1223,6 +1434,7 @@ async fn export_doc_evidence_handler(
             "id": row.get::<uuid::Uuid,_>("id"),
             "sender_wallet": row.get::<String,_>("sender_wallet"),
             "recipient_wallet": row.get::<Option<String>,_>("recipient_wallet"),
+            "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
             "recipient_name": row.get::<Option<String>,_>("recipient_name"),
             "recipient_email": row.get::<Option<String>,_>("recipient_email"),
             "recipient_phone": row.get::<Option<String>,_>("recipient_phone"),
@@ -1261,7 +1473,7 @@ async fn anchor_evidence_bundle_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let wallet = session.wallet.clone();
-    let doc = load_document_access_record(&st.db, id, &wallet).await?;
+    let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&wallet) {
         return Err(AppError::Forbidden("Only the owner can anchor evidence bundles".into()));
@@ -1316,8 +1528,9 @@ async fn get_document_policy_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
-    let doc = load_document_access_record(&st.db, id, &wallet).await?;
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = session.wallet.clone();
+    let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&wallet) {
         return Err(AppError::Forbidden("Only the owner can view document policy".into()));
@@ -1339,7 +1552,7 @@ async fn set_document_policy_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let wallet = session.wallet.clone();
-    let doc = load_document_access_record(&st.db, id, &wallet).await?;
+    let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&wallet) {
         return Err(AppError::Forbidden("Only the owner can update document policy".into()));
@@ -1433,7 +1646,13 @@ async fn agent_review_doc_handler(
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let agent = require_agent_from_headers(&st, &headers).await?;
-    let doc = load_document_access_record(&st.db, id, &agent.owner_wallet).await?;
+    let doc = load_document_access_record(
+        &st.db,
+        id,
+        &agent.owner_wallet,
+        infer_wallet_chain(&agent.owner_wallet),
+    )
+    .await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&agent.owner_wallet) {
         return Err(AppError::Forbidden("Agent may only review owner-controlled documents".into()));
@@ -1484,7 +1703,13 @@ async fn agent_sign_doc_handler(
     Json(body): Json<AgentSignRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let agent = require_agent_from_headers(&st, &headers).await?;
-    let doc = load_document_access_record(&st.db, id, &agent.owner_wallet).await?;
+    let doc = load_document_access_record(
+        &st.db,
+        id,
+        &agent.owner_wallet,
+        infer_wallet_chain(&agent.owner_wallet),
+    )
+    .await?;
     let policy = load_document_policy(&st.db, id, &doc.owner_wallet).await?;
 
     if !agent_allowed(&policy, "allow_agent_sign", &agent) {
@@ -1537,7 +1762,13 @@ async fn agent_version_doc_handler(
     Json(body): Json<AgentVersionRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let agent = require_agent_from_headers(&st, &headers).await?;
-    let parent = load_document_access_record(&st.db, parent_doc_id, &agent.owner_wallet).await?;
+    let parent = load_document_access_record(
+        &st.db,
+        parent_doc_id,
+        &agent.owner_wallet,
+        infer_wallet_chain(&agent.owner_wallet),
+    )
+    .await?;
     let policy = load_document_policy(&st.db, parent_doc_id, &parent.owner_wallet).await?;
 
     if !agent_allowed(&policy, "allow_agent_review", &agent) {
@@ -1707,7 +1938,7 @@ async fn create_document_version_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let wallet = session.wallet.clone();
-    let parent = load_document_access_record(&st.db, parent_doc_id, &wallet).await?;
+    let parent = load_document_access_record(&st.db, parent_doc_id, &wallet, &session.chain).await?;
 
     if !parent.owner_wallet.eq_ignore_ascii_case(&wallet) {
         return Err(AppError::Forbidden("Only the document owner can create a new version".into()));
@@ -1847,7 +2078,7 @@ async fn review_doc_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let wallet = session.wallet.clone();
-    let doc = load_document_access_record(&st.db, id, &wallet).await?;
+    let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     sqlx::query(
         "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'VIEW',$3)",
@@ -1892,8 +2123,8 @@ async fn doc_blob_handler(
     Path(id): Path<uuid::Uuid>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
-    let access = load_document_access_record(&st.db, id, &wallet).await?;
+    let session = require_session_from_headers(&st, &headers)?;
+    let access = load_document_access_record(&st.db, id, &session.wallet, &session.chain).await?;
     let doc = load_document_bytes_for_access(&st, &access).await?;
     let disposition = params.get("download").map(|value| value == "1" || value == "true");
     let filename = doc
@@ -1938,7 +2169,7 @@ async fn download_doc_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let wallet = session.wallet.clone();
-    let doc = load_document_access_record(&st.db, id, &wallet).await?;
+    let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     sqlx::query(
         "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'DOWNLOAD',$3)",
@@ -1981,7 +2212,7 @@ async fn sign_doc_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let wallet = session.wallet.clone();
-    let doc = load_document_access_record(&st.db, doc_id, &wallet)
+    let doc = load_document_access_record(&st.db, doc_id, &wallet, &session.chain)
         .await
         .map_err(|_| AppError::Forbidden("You do not have signing access to this document".into()))?;
 
@@ -2010,7 +2241,16 @@ async fn sign_doc_handler(
                 "recovered_wallet": recovered
             })
         }
-        "pq_dilithium3" => {
+        "sol_ed25519" => {
+            verify_solana_signature(&canonical_message, &wallet, &body.signature)?;
+
+            json!({
+                "signature_type": signature_type,
+                "verified_wallet": wallet,
+                "chain": "sol"
+            })
+        }
+        "pq_dilithium3" | "pq_mldsa65" => {
             let public_key_b64 = body
                 .pq_public_key_b64
                 .clone()
@@ -2112,6 +2352,7 @@ async fn share_doc_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers)?;
     let sender = session.wallet.clone();
+    let sender_chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&sender));
     let requested_wallet = body
         .recipient_wallet
         .clone()
@@ -2151,34 +2392,57 @@ async fn share_doc_handler(
     let hash_hex: String = doc.get("hash_hex");
     let envelope_id = uuid::Uuid::new_v4();
     let access_token = uuid::Uuid::new_v4().simple().to_string();
-    let recipient_wallet = requested_wallet.clone();
+    let recipient_chain = requested_wallet
+        .as_deref()
+        .map(|wallet| {
+            body.recipient_chain
+                .as_deref()
+                .and_then(canonical_chain)
+                .unwrap_or_else(|| infer_wallet_chain(wallet))
+                .to_string()
+        });
+    let recipient_wallet = requested_wallet
+        .as_deref()
+        .map(|wallet| {
+            normalize_wallet_for_chain(
+                wallet,
+                recipient_chain
+                    .as_deref()
+                    .unwrap_or_else(|| infer_wallet_chain(wallet)),
+            )
+        });
     let recipient_name = body
         .recipient_name
         .clone()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let signing_url = envelope_signing_url(&access_token);
+    let has_wallet_route = recipient_wallet.is_some();
+    let has_provider_request = requested_email.is_some() || requested_phone.is_some();
+    let initial_status = if has_wallet_route { "wallet_shared" } else { "created" };
 
     sqlx::query(
         r#"insert into document_shares
-        (doc_id, sender_wallet, recipient_wallet, recipient_name, envelope_id, note, recipient_email, recipient_phone, access_token, status, delivery_json)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'sent',$10)"#,
+        (doc_id, sender_wallet, recipient_wallet, recipient_chain, recipient_name, envelope_id, note, recipient_email, recipient_phone, access_token, status, delivery_json)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
     )
     .bind(doc_id)
     .bind(&sender)
     .bind(&recipient_wallet)
+    .bind(&recipient_chain)
     .bind(&recipient_name)
     .bind(envelope_id)
     .bind(&body.note)
     .bind(&requested_email)
     .bind(&requested_phone)
     .bind(&access_token)
+    .bind(initial_status)
     .bind(json!([]))
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let (deliveries, delivery_errors) = dispatch_share_deliveries(
+    let (mut deliveries, delivery_errors) = dispatch_share_deliveries(
         requested_email.as_deref(),
         requested_phone.as_deref(),
         label.as_deref(),
@@ -2190,9 +2454,30 @@ async fn share_doc_handler(
     )
     .await;
 
-    sqlx::query("update document_shares set delivery_json = $2 where access_token = $1")
+    if let Some(wallet) = recipient_wallet.clone() {
+        deliveries.insert(
+            0,
+            DeliveryOutcome {
+                channel: "wallet",
+                provider: "tidbit",
+                recipient: wallet,
+                external_id: Some(envelope_id.to_string()),
+                status: "available_in_inbox",
+            },
+        );
+    }
+
+    let final_status = derive_share_status(
+        has_wallet_route,
+        has_provider_request,
+        &deliveries,
+        &delivery_errors,
+    );
+
+    sqlx::query("update document_shares set delivery_json = $2, status = $3 where access_token = $1")
         .bind(&access_token)
         .bind(serde_json::to_value(&deliveries).map_err(|e| AppError::Internal(e.to_string()))?)
+        .bind(final_status)
         .execute(&st.db)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -2205,6 +2490,7 @@ async fn share_doc_handler(
     .bind(custody_payload(
         build_share_event_payload(
             recipient_wallet.as_deref(),
+            recipient_chain.as_deref(),
             body.note.as_deref(),
             envelope_id,
             body.signature.as_deref(),
@@ -2233,7 +2519,9 @@ async fn share_doc_handler(
                 "provider": outcome.provider,
                 "recipient": outcome.recipient,
                 "external_id": outcome.external_id,
-                "status": outcome.status
+                "status": outcome.status,
+                "recipient_chain": recipient_chain,
+                "sender_chain": sender_chain
             }),
             &session,
             &headers,
@@ -2269,10 +2557,12 @@ async fn share_doc_handler(
         "label": label,
         "hash_hex": hash_hex,
         "recipient_wallet": recipient_wallet,
+        "recipient_chain": recipient_chain,
         "recipient_name": recipient_name,
         "recipient_email": requested_email,
         "recipient_phone": requested_phone,
         "signing_url": signing_url,
+        "status": final_status,
         "delivery": deliveries,
         "delivery_errors": delivery_errors
     })))
@@ -2282,7 +2572,9 @@ async fn list_inbox_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let wallet = require_wallet_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = normalize_wallet_for_chain(&session.wallet, canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)));
+    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let rows = sqlx::query(
         r#"
@@ -2290,19 +2582,34 @@ async fn list_inbox_handler(
             s.doc_id,
             s.sender_wallet,
             s.recipient_wallet,
+            s.recipient_chain,
             s.envelope_id,
             s.note,
+            s.status,
             d.label,
             d.hash_hex,
             d.version
         from document_shares s
         join documents d on d.id = s.doc_id
-        where s.recipient_wallet = $1
+        where s.recipient_wallet is not null
+          and (
+            (coalesce(s.recipient_chain, '') = 'evm' and $2 = 'evm' and lower(s.recipient_wallet) = lower($1))
+            or
+            (coalesce(s.recipient_chain, '') = 'sol' and $2 = 'sol' and s.recipient_wallet = $1)
+            or
+            (s.recipient_chain is null and (
+              ($1 like '0x%' and lower(s.recipient_wallet) = lower($1))
+              or
+              ($1 not like '0x%' and s.recipient_wallet = $1)
+            ))
+          )
+          and s.status in ('wallet_shared', 'wallet_shared_with_delivery_issues', 'sent', 'created', 'delivery_issue', 'opened')
           and d.is_deleted = false
         order by d.created_at desc
         "#,
     )
     .bind(&wallet)
+    .bind(chain)
     .fetch_all(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -2313,14 +2620,115 @@ async fn list_inbox_handler(
             .map(|r| json!({
                 "doc_id": r.get::<uuid::Uuid,_>("doc_id"),
                 "sender_wallet": r.get::<String,_>("sender_wallet"),
-                "recipient_wallet": r.get::<String,_>("recipient_wallet"),
+                "recipient_wallet": r.get::<Option<String>,_>("recipient_wallet"),
+                "recipient_chain": r.get::<Option<String>,_>("recipient_chain"),
                 "envelope_id": r.get::<uuid::Uuid,_>("envelope_id"),
                 "note": r.get::<Option<String>,_>("note"),
+                "status": r.get::<String,_>("status"),
                 "label": r.get::<Option<String>,_>("label"),
                 "hash_hex": r.get::<String,_>("hash_hex"),
                 "version": r.get::<i32,_>("version")
             }))
             .collect::<Vec<_>>()
+    })))
+}
+
+async fn inbox_action_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(envelope_id): Path<uuid::Uuid>,
+    Json(body): Json<InboxActionRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = normalize_wallet_for_chain(
+        &session.wallet,
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
+    );
+    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+    let action = body.action.trim().to_ascii_lowercase();
+
+    let row = sqlx::query(
+        r#"
+        select s.doc_id, s.status, s.recipient_wallet, s.recipient_chain
+        from document_shares s
+        join documents d on d.id = s.doc_id
+        where s.envelope_id = $1
+          and d.is_deleted = false
+          and s.recipient_wallet is not null
+          and (
+            (coalesce(s.recipient_chain, '') = 'evm' and $3 = 'evm' and lower(s.recipient_wallet) = lower($2))
+            or
+            (coalesce(s.recipient_chain, '') = 'sol' and $3 = 'sol' and s.recipient_wallet = $2)
+            or
+            (s.recipient_chain is null and (
+              ($2 like '0x%' and lower(s.recipient_wallet) = lower($2))
+              or
+              ($2 not like '0x%' and s.recipient_wallet = $2)
+            ))
+          )
+        "#,
+    )
+    .bind(envelope_id)
+    .bind(&wallet)
+    .bind(chain)
+    .fetch_optional(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let Some(row) = row else {
+        return Err(AppError::NotFound("Inbox item not found".into()));
+    };
+
+    let doc_id: uuid::Uuid = row.get("doc_id");
+    let next_status = match action.as_str() {
+        "review" | "open" | "download" | "sign" => "accepted",
+        "delete" | "dismiss" => "dismissed",
+        _ => return Err(AppError::BadRequest("Unsupported inbox action".into())),
+    };
+    let event_type = match action.as_str() {
+        "review" | "open" => "INBOX_REVIEWED",
+        "download" => "INBOX_DOWNLOADED",
+        "sign" => "INBOX_SIGNED",
+        "delete" | "dismiss" => "INBOX_DISMISSED",
+        _ => unreachable!(),
+    };
+
+    sqlx::query(
+        "update document_shares set status = $2, viewed_at = coalesce(viewed_at, now()) where envelope_id = $1",
+    )
+    .bind(envelope_id)
+    .bind(next_status)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    sqlx::query(
+        "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,$3,$4)",
+    )
+    .bind(doc_id)
+    .bind(&session.wallet)
+    .bind(event_type)
+    .bind(custody_payload(
+        json!({
+            "envelope_id": envelope_id,
+            "inbox_action": action,
+            "recipient_wallet": row.get::<Option<String>,_>("recipient_wallet"),
+            "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
+            "share_status": next_status
+        }),
+        &session,
+        &headers,
+    ))
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "doc_id": doc_id,
+        "envelope_id": envelope_id,
+        "status": next_status,
+        "action": action
     })))
 }
 
@@ -2336,6 +2744,7 @@ async fn public_envelope_handler(
             s.doc_id,
             s.sender_wallet,
             s.recipient_wallet,
+            s.recipient_chain,
             s.recipient_name,
             s.recipient_email,
             s.recipient_phone,
@@ -2388,6 +2797,7 @@ async fn public_envelope_handler(
             json!({
                 "envelope_id": envelope_id,
                 "recipient_wallet": row.get::<Option<String>,_>("recipient_wallet"),
+                "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
                 "recipient_name": row.get::<Option<String>,_>("recipient_name"),
                 "recipient_email": row.get::<Option<String>,_>("recipient_email"),
                 "recipient_phone": row.get::<Option<String>,_>("recipient_phone"),
@@ -2406,6 +2816,7 @@ async fn public_envelope_handler(
         "envelope_id": envelope_id,
         "sender_wallet": row.get::<String,_>("sender_wallet"),
         "recipient_wallet": row.get::<Option<String>,_>("recipient_wallet"),
+        "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
         "recipient_name": row.get::<Option<String>,_>("recipient_name"),
         "recipient_email": row.get::<Option<String>,_>("recipient_email"),
         "recipient_phone": row.get::<Option<String>,_>("recipient_phone"),
@@ -2577,7 +2988,26 @@ async fn public_envelope_sign_handler(
                 "recovered_wallet": recovered
             })
         }
-        "pq_dilithium3" => {
+        "sol_ed25519" => {
+            let wallet_address = body
+                .wallet_address
+                .clone()
+                .ok_or_else(|| AppError::BadRequest("wallet_address is required for Solana signing".into()))?;
+            let signature = body
+                .signature
+                .clone()
+                .ok_or_else(|| AppError::BadRequest("signature is required for Solana signing".into()))?;
+
+            verify_solana_signature(&canonical_message, &wallet_address, &signature)?;
+
+            json!({
+                "signature_type": "sol_ed25519",
+                "wallet_address": wallet_address,
+                "signature": signature,
+                "chain": "sol"
+            })
+        }
+        "pq_dilithium3" | "pq_mldsa65" => {
             let pq_public_key_b64 = body
                 .pq_public_key_b64
                 .clone()
@@ -2600,7 +3030,7 @@ async fn public_envelope_sign_handler(
             }
 
             json!({
-                "signature_type": "pq_dilithium3",
+                "signature_type": "pq_mldsa65",
                 "pq_public_key_b64": pq_public_key_b64,
                 "signature": signature
             })
@@ -2789,6 +3219,7 @@ mod tests {
         let envelope_id = uuid::Uuid::parse_str("66202c33-f9ee-45d4-83d5-5f970a4184e2").unwrap();
         let payload = build_share_event_payload(
             Some("0xrecipient"),
+            Some("evm"),
             Some("Review and sign"),
             envelope_id,
             Some("0xsig"),
@@ -2799,6 +3230,7 @@ mod tests {
         );
 
         assert_eq!(payload["recipient_wallet"], "0xrecipient");
+        assert_eq!(payload["recipient_chain"], "evm");
         assert_eq!(payload["recipient_name"], "Signer Example");
         assert_eq!(payload["note"], "Review and sign");
         assert_eq!(payload["signature"], "0xsig");

@@ -21,7 +21,15 @@ pub async fn send_email_invite(
 ) -> Result<Option<DeliveryOutcome>, AppError> {
     let api_key = match std::env::var("RESEND_API_KEY") {
         Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(None),
+        _ => {
+            return Ok(Some(DeliveryOutcome {
+                channel: "email",
+                provider: "resend",
+                recipient: recipient_email.to_string(),
+                external_id: None,
+                status: "provider_unconfigured",
+            }))
+        }
     };
     let from = std::env::var("RESEND_FROM_EMAIL")
         .unwrap_or_else(|_| "TIDBIT-share-WEAVE <onboarding@resend.dev>".to_string());
@@ -83,7 +91,15 @@ pub async fn send_sms_invite(
 ) -> Result<Option<DeliveryOutcome>, AppError> {
     let account_sid = match std::env::var("TWILIO_ACCOUNT_SID") {
         Ok(value) if !value.trim().is_empty() => value,
-        _ => return Ok(None),
+        _ => {
+            return Ok(Some(DeliveryOutcome {
+                channel: "sms",
+                provider: "twilio",
+                recipient: recipient_phone.to_string(),
+                external_id: None,
+                status: "provider_unconfigured",
+            }))
+        }
     };
     let auth_token = std::env::var("TWILIO_AUTH_TOKEN")
         .map_err(|_| AppError::Internal("TWILIO_AUTH_TOKEN is required when TWILIO_ACCOUNT_SID is set".into()))?;

@@ -24,7 +24,8 @@
 
     <section class="panel tab-bar">
       <button id="homeTabBtn" class="button-primary" type="button">Home</button>
-      <button id="docsTabBtn" type="button">Documents &amp; Edits</button>
+      <button id="docsTabBtn" type="button">Inbox / Documents</button>
+      <button id="sharedTabBtn" type="button">Shared</button>
     </section>
 
     <div id="homeTabPanel">
@@ -68,13 +69,30 @@
             <h3>Your Documents</h3>
             <p class="muted">Open a document to handle details, review, edits, versioning, and evidence.</p>
           </div>
+          <button id="docsBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
         </div>
         <div id="docList" class="doc-grid">Loading documents…</div>
       </div>
 
       <div class="panel">
-        <h3>Inbox</h3>
+        <div class="section-head">
+          <h3>Inbox</h3>
+          <button id="inboxBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
+        </div>
         <div id="inboxList" class="inbox-list">Loading inbox…</div>
+      </div>
+    </div>
+
+    <div id="sharedTabPanel" class="hidden">
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Shared Files</h3>
+            <p class="muted">Files you have sent to other people or wallets.</p>
+          </div>
+          <button id="sharedBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
+        </div>
+        <div id="sharedList" class="inbox-list">Loading shared files…</div>
       </div>
     </div>
   </div>
@@ -100,6 +118,14 @@
           <label for="modalRecipientWallet">Recipient wallet</label>
           <input id="modalRecipientWallet" placeholder="0x... optional" />
         </div>
+      </div>
+
+      <div class="form-row">
+        <label for="modalRecipientChain">Recipient wallet network</label>
+        <select id="modalRecipientChain">
+          <option value="evm">MetaMask / EVM</option>
+          <option value="sol">Phantom / Solana</option>
+        </select>
       </div>
 
       <div class="grid two-up compact">
