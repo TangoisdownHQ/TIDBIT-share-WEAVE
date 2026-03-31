@@ -11,24 +11,11 @@ This folder holds the current project audit and dependency documentation for TID
 
 Current Rust audit state as of March 30, 2026:
 
-- 1 active vulnerability path
-- 1 unmaintained crate warning
-
-### Active Vulnerability
-
-- `rsa 0.9.10`
-- reported through `sqlx-mysql 0.8.6`
-- advisory: `RUSTSEC-2023-0071`
-
-### Warning
-
-- `paste 1.0.15`
-- reported as unmaintained
-- advisory: `RUSTSEC-2024-0436`
-- path: `pqcrypto-mldsa -> paste`
+- 0 active vulnerability paths
+- 0 active warnings
 
 ## Interpretation
 
-The current app uses Postgres, not MySQL, so the `rsa` issue is coming from an unnecessary dependency path in the broader `sqlx` graph rather than from an active MySQL feature used by the app.
+The prior `rsa` issue was mitigated by removing the umbrella `sqlx` crate from the backend dependency graph and switching the app to `sqlx-core` plus `sqlx-postgres` directly. That dropped the unused MySQL and SQLite branches out of `Cargo.lock`, and `cargo audit` no longer reports `RUSTSEC-2023-0071`.
 
-The `paste` warning is more important for the post-quantum roadmap because it sits under the PQ signature dependency chain.
+The prior `paste` warning was mitigated by replacing `pqcrypto-mldsa` with the maintained `fips204` ML-DSA implementation. The current dependency graph audits cleanly.

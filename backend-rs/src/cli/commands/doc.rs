@@ -4,13 +4,13 @@ use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use reqwest::Client;
-use sqlx::Row;
 
 use crate::arweave::anchor_hash_to_arweave;
 use crate::c2c::{record, store as c2c_store};
 use crate::cli::parser::DocCommands;
 use crate::identity::local_wallet::LocalWallet;
 use crate::pqc::sha3 as pqc_sha3;
+use crate::sqlx::{self, Row};
 use crate::storage::supabase::SupabaseStorage;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]

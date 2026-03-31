@@ -74,8 +74,8 @@ impl From<hex::FromHexError> for AppError {
     }
 }
 
-use sqlx::Error as SqlxError;
 use anyhow::Error as AnyhowError;
+use crate::sqlx::Error as SqlxError;
 
 impl From<SqlxError> for AppError {
     fn from(e: SqlxError) -> Self {

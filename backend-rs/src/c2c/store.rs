@@ -3,10 +3,10 @@
 use std::{fs, path::PathBuf};
 
 use serde_json::Value;
-use sqlx::{PgPool, Row};
 
 use crate::c2c::types::{C2CEvent, C2CEventKind};
 use crate::error::{AppError, AppResult};
+use crate::sqlx::{self, PgPool, Row};
 
 fn events_dir() -> PathBuf {
     let mut dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));

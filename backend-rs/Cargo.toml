@@ -13,19 +13,25 @@ cookie = "0.18"
 ethers-core = "2.0"
 ethers-signers = "2.0"
 # Database (Supabase Postgres)
-sqlx = { version = "0.8.1", features = [
-    "runtime-tokio-rustls",
-    "postgres",
+sqlx-core = { version = "=0.8.6", default-features = false, features = [
+    "_rt-tokio",
+    "_tls-rustls-ring-webpki",
+    "chrono",
     "uuid",
-    "chrono"
+    "json"
+] }
+sqlx-postgres = { version = "=0.8.6", default-features = false, features = [
+    "chrono",
+    "uuid",
+    "json"
 ] }
 
 
 # PQC
 pqcrypto-mlkem = "0.1.1"
-pqcrypto-mldsa = "0.1.2"
 pqcrypto-traits = "0.3"
 chacha20poly1305 = "0.10"
+fips204 = "0.4.6"
 
 # Hashing & EVM-style keys
 sha3 = "0.10"

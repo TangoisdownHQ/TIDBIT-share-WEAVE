@@ -13,6 +13,7 @@ mod models;
 mod pqc;
 mod routes;
 mod sanitizer;
+mod sqlx;
 mod storage;
 
 use axum::extract::{Multipart, Path, Query, State};
@@ -28,8 +29,6 @@ use clap::Parser;
 use cli::commands::{auth, c2c as cli_c2c, doc, wallet};
 use cli::parser::{Cli, Commands};
 use serde_json::json;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Row};
 use std::collections::HashMap;
 
 use tower_http::cors::CorsLayer;
@@ -39,6 +38,8 @@ use crate::error::AppError;
 use crate::identity_web::evm::{verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
 use crate::identity_web::state::WalletSession;
 use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
+use crate::sqlx::postgres::PgPoolOptions;
+use crate::sqlx::{PgPool, Row};
 use crate::models::{
     AgentRegisterRequest, AgentSignRequest, AgentVersionRequest, DocumentPolicyUpdateRequest,
     InboxActionRequest, PublicEnvelopeSignRequest, ShareRequest, SignRequest, SignerAnnotationField,
