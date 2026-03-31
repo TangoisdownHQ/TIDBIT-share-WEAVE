@@ -321,6 +321,10 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function escapeErrorMessage(err) {
+  return escapeHtml(err?.message || "Unexpected error");
+}
+
 async function copyText(value, successMessage) {
   await navigator.clipboard.writeText(value);
   if (successMessage) alert(successMessage);
@@ -333,13 +337,13 @@ async function loadSessionInfo() {
   if (sessionRoot) {
     sessionRoot.innerHTML = `
       <div><strong>Wallet</strong></div>
-      <div class="doc-meta">${data.wallet}</div>
+      <div class="doc-meta">${escapeHtml(data.wallet)}</div>
       <div><strong>Chain</strong></div>
-      <div class="doc-meta">${data.chain}</div>
+      <div class="doc-meta">${escapeHtml(data.chain)}</div>
       <div><strong>Session</strong></div>
-      <div class="doc-meta">Active since ${new Date(data.created_at * 1000).toLocaleString()}</div>
+      <div class="doc-meta">Active since ${escapeHtml(new Date(data.created_at * 1000).toLocaleString())}</div>
       <div><strong>ML-KEM PK</strong></div>
-      <div class="doc-meta">${(data.mlkem_pk_b64 || "").slice(0, 48)}${data.mlkem_pk_b64 ? "…" : ""}</div>
+      <div class="doc-meta">${escapeHtml((data.mlkem_pk_b64 || "").slice(0, 48))}${data.mlkem_pk_b64 ? "…" : ""}</div>
     `;
   }
   currentWallet = data.wallet;
@@ -360,15 +364,15 @@ async function loadDocuments() {
     const div = document.createElement("div");
     div.className = "doc-card";
     div.innerHTML = `
-      <h4>${doc.label || "(untitled document)"}</h4>
-      <div class="doc-meta">Access: ${doc.access_kind === "shared" ? "Shared with you" : "Owned by you"}</div>
-      <div class="doc-meta">Hash: ${doc.hash_hex}</div>
-      <div class="doc-meta">Document ID: ${doc.id}</div>
-      <div class="doc-meta">Version: v${doc.version}</div>
-      <div class="doc-meta">Type: ${doc.mime_type || "application/octet-stream"}</div>
-      <div class="doc-meta">Created: ${new Date(doc.created_at).toLocaleString()}</div>
-      <div class="doc-meta">Last signed: ${doc.last_signed_at ? new Date(doc.last_signed_at).toLocaleString() : "not signed yet"}</div>
-      <div class="doc-meta">Arweave: ${doc.arweave_tx || "not anchored"}</div>
+      <h4>${escapeHtml(doc.label || "(untitled document)")}</h4>
+      <div class="doc-meta">Access: ${escapeHtml(doc.access_kind === "shared" ? "Shared with you" : "Owned by you")}</div>
+      <div class="doc-meta">Hash: ${escapeHtml(doc.hash_hex)}</div>
+      <div class="doc-meta">Document ID: ${escapeHtml(doc.id)}</div>
+      <div class="doc-meta">Version: v${escapeHtml(doc.version)}</div>
+      <div class="doc-meta">Type: ${escapeHtml(doc.mime_type || "application/octet-stream")}</div>
+      <div class="doc-meta">Created: ${escapeHtml(new Date(doc.created_at).toLocaleString())}</div>
+      <div class="doc-meta">Last signed: ${escapeHtml(doc.last_signed_at ? new Date(doc.last_signed_at).toLocaleString() : "not signed yet")}</div>
+      <div class="doc-meta">Arweave: ${escapeHtml(doc.arweave_tx || "not anchored")}</div>
       <div class="doc-actions">
         <a class="button-link" href="/document.html?id=${encodeURIComponent(doc.id)}">Details</a>
         <button data-action="review">Review</button>
@@ -606,13 +610,13 @@ async function loadInbox() {
       const card = document.createElement("div");
       card.className = "inbox-card";
       card.innerHTML = `
-        <h4>${item.label || "(shared document)"}</h4>
-        <div class="doc-meta">From: ${item.sender_wallet}</div>
-        <div class="doc-meta">Hash: ${item.hash_hex}</div>
-        <div class="doc-meta">Envelope ID: ${item.envelope_id}</div>
-        <div class="doc-meta">Version: v${item.version}</div>
-        <div class="doc-meta">Note: ${item.note || "No note"}</div>
-        <div class="doc-meta">Status: ${item.status || "pending"}</div>
+        <h4>${escapeHtml(item.label || "(shared document)")}</h4>
+        <div class="doc-meta">From: ${escapeHtml(item.sender_wallet)}</div>
+        <div class="doc-meta">Hash: ${escapeHtml(item.hash_hex)}</div>
+        <div class="doc-meta">Envelope ID: ${escapeHtml(item.envelope_id)}</div>
+        <div class="doc-meta">Version: v${escapeHtml(item.version)}</div>
+        <div class="doc-meta">Note: ${escapeHtml(item.note || "No note")}</div>
+        <div class="doc-meta">Status: ${escapeHtml(item.status || "pending")}</div>
         <div class="doc-actions">
           <button data-action="review">Review</button>
           <button data-action="download">Download</button>
@@ -630,7 +634,7 @@ async function loadInbox() {
       box.appendChild(card);
     });
   } catch (err) {
-    box.innerHTML = `<div class='inbox-card'><strong>Inbox unavailable.</strong><div class='doc-meta'>${err.message}</div></div>`;
+    box.innerHTML = `<div class='inbox-card'><strong>Inbox unavailable.</strong><div class='doc-meta'>${escapeErrorMessage(err)}</div></div>`;
   }
 }
 
@@ -645,14 +649,14 @@ async function loadSharedFiles() {
       const card = document.createElement("div");
       card.className = "inbox-card";
       card.innerHTML = `
-        <h4>${item.label || "(shared document)"}</h4>
-        <div class="doc-meta">Recipient: ${item.recipient_name || item.recipient_email || item.recipient_phone || item.recipient_wallet || "unknown"}</div>
-        <div class="doc-meta">Network: ${item.recipient_chain || "n/a"}</div>
-        <div class="doc-meta">Status: ${item.status}</div>
-        <div class="doc-meta">Wallet route: ${item.recipient_wallet ? "yes" : "no"}</div>
-        <div class="doc-meta">Delivery: ${Array.isArray(item.delivery_json) && item.delivery_json.length ? item.delivery_json.map((entry) => `${entry.channel}:${entry.status}`).join(", ") : "no provider delivery recorded"}</div>
-        <div class="doc-meta">Version: v${item.version}</div>
-        <div class="doc-meta">Created: ${new Date(item.created_at).toLocaleString()}</div>
+        <h4>${escapeHtml(item.label || "(shared document)")}</h4>
+        <div class="doc-meta">Recipient: ${escapeHtml(item.recipient_name || item.recipient_email || item.recipient_phone || item.recipient_wallet || "unknown")}</div>
+        <div class="doc-meta">Network: ${escapeHtml(item.recipient_chain || "n/a")}</div>
+        <div class="doc-meta">Status: ${escapeHtml(item.status)}</div>
+        <div class="doc-meta">Wallet route: ${escapeHtml(item.recipient_wallet ? "yes" : "no")}</div>
+        <div class="doc-meta">Delivery: ${escapeHtml(Array.isArray(item.delivery_json) && item.delivery_json.length ? item.delivery_json.map((entry) => `${entry.channel}:${entry.status}`).join(", ") : "no provider delivery recorded")}</div>
+        <div class="doc-meta">Version: v${escapeHtml(item.version)}</div>
+        <div class="doc-meta">Created: ${escapeHtml(new Date(item.created_at).toLocaleString())}</div>
         <div class="doc-actions">
           <a class="button-link" href="/document.html?id=${encodeURIComponent(item.doc_id)}">Open document</a>
         </div>
@@ -660,7 +664,7 @@ async function loadSharedFiles() {
       box.appendChild(card);
     });
   } catch (err) {
-    box.innerHTML = `<div class='inbox-card'><strong>Shared files unavailable.</strong><div class='doc-meta'>${err.message}</div></div>`;
+    box.innerHTML = `<div class='inbox-card'><strong>Shared files unavailable.</strong><div class='doc-meta'>${escapeErrorMessage(err)}</div></div>`;
   }
 }
 
@@ -673,7 +677,7 @@ async function loadSharedActivity() {
       ? renderHistoryCards(items, { currentWallet, aggregate: true })
       : "<div class='event-card neutral-event'><strong>No shared activity yet.</strong><div class='event-meta'>Actions across shared files will appear here.</div></div>";
   } catch (err) {
-    box.innerHTML = `<div class='event-card neutral-event'><strong>Shared activity unavailable.</strong><div class='event-meta'>${err.message}</div></div>`;
+    box.innerHTML = `<div class='event-card neutral-event'><strong>Shared activity unavailable.</strong><div class='event-meta'>${escapeErrorMessage(err)}</div></div>`;
   }
 }
 
@@ -695,7 +699,7 @@ async function loadBillingStatus() {
       <div class="doc-meta">Paid through: ${status.paid_through ? new Date(status.paid_through).toLocaleString() : "not set"}</div>
     `;
   } catch (err) {
-    box.innerHTML = `<div class="event-card neutral-event"><strong>Billing unavailable.</strong><div class="event-meta">${err.message}</div></div>`;
+    box.innerHTML = `<div class="event-card neutral-event"><strong>Billing unavailable.</strong><div class="event-meta">${escapeErrorMessage(err)}</div></div>`;
   }
 }
 
@@ -712,9 +716,9 @@ function prepareShare(doc) {
   if (!stateRoot) return;
   stateRoot.innerHTML = `
     <strong>Selected document</strong>
-    <div class="doc-meta">${doc.label || "(untitled document)"}</div>
-    <div class="doc-meta">ID: ${doc.id}</div>
-    <div class="doc-meta">Hash: ${doc.hash_hex}</div>
+    <div class="doc-meta">${escapeHtml(doc.label || "(untitled document)")}</div>
+    <div class="doc-meta">ID: ${escapeHtml(doc.id)}</div>
+    <div class="doc-meta">Hash: ${escapeHtml(doc.hash_hex)}</div>
   `;
   const title = document.getElementById("shareModalTitle");
   if (title) title.textContent = `Create signing link for ${doc.label || "document"}`;
@@ -740,10 +744,10 @@ function prepareVersion(doc) {
   selectedVersionParent = doc;
   document.getElementById("versionState").innerHTML = `
     <strong>Parent document</strong>
-    <div class="doc-meta">${doc.label || "(untitled document)"}</div>
-    <div class="doc-meta">ID: ${doc.id}</div>
-    <div class="doc-meta">Current version: v${doc.version}</div>
-    <div class="doc-meta">Arweave: ${doc.arweave_tx || "not anchored"}</div>
+    <div class="doc-meta">${escapeHtml(doc.label || "(untitled document)")}</div>
+    <div class="doc-meta">ID: ${escapeHtml(doc.id)}</div>
+    <div class="doc-meta">Current version: v${escapeHtml(doc.version)}</div>
+    <div class="doc-meta">Arweave: ${escapeHtml(doc.arweave_tx || "not anchored")}</div>
   `;
   document.getElementById("versionResult").innerText = "Ready to create a linked version.";
 }
@@ -1061,14 +1065,14 @@ function renderHistoryCards(events, context = {}) {
         return `
         <article class="event-card ${actor.role}-event">
           <div class="event-top">
-            <strong>${event.event_type}</strong>
-            <span class="muted">${new Date(event.created_at).toLocaleString()}</span>
+            <strong>${escapeHtml(event.event_type)}</strong>
+            <span class="muted">${escapeHtml(new Date(event.created_at).toLocaleString())}</span>
           </div>
-          <div class="event-meta"><span class="role-badge ${actor.role}-role">${actor.label}</span></div>
-          <div class="event-meta">Actor: ${event.actor_wallet || "system"}</div>
-          <div class="event-meta">Event ID: ${event.id}</div>
+          <div class="event-meta"><span class="role-badge ${actor.role}-role">${escapeHtml(actor.label)}</span></div>
+          <div class="event-meta">Actor: ${escapeHtml(event.actor_wallet || "system")}</div>
+          <div class="event-meta">Event ID: ${escapeHtml(event.id)}</div>
           ${renderImportantMeta(event)}
-          <pre>${JSON.stringify(event.payload || {}, null, 2)}</pre>
+          <pre>${escapeHtml(JSON.stringify(event.payload || {}, null, 2))}</pre>
         </article>
       `
       }
@@ -1198,7 +1202,7 @@ function updateAnnotationFieldList(fields) {
     const row = document.createElement("div");
     row.className = "field-chip";
     row.innerHTML = `
-      <span>${field.kind} · ${Math.round(field.x_pct)}%, ${Math.round(field.y_pct)}%</span>
+      <span>${escapeHtml(field.kind)} · ${escapeHtml(Math.round(field.x_pct))}%, ${escapeHtml(Math.round(field.y_pct))}%</span>
       <button type="button" data-remove-field="${index}">Remove</button>
     `;
     root.appendChild(row);
@@ -1284,7 +1288,7 @@ function renderPreviewNode(blob, mimeType, options = {}) {
     const fallback = document.createElement("div");
     fallback.className = "preview-fallback";
     fallback.innerHTML = `
-      <strong>Preview unavailable for ${mimeType || "this file type"}.</strong>
+      <strong>Preview unavailable for ${escapeHtml(mimeType || "this file type")}.</strong>
       <div class="doc-meta">Use the verified download to inspect it locally before signing.</div>
     `;
     shell.appendChild(fallback);
@@ -1340,14 +1344,14 @@ async function loadReviewPage() {
         : "Preview loaded, but the file hash does not match the recorded custody hash.";
 
     metaRoot.innerHTML = `
-      <div class="doc-meta">Document ID: ${id}</div>
-      <div class="doc-meta">Hash: ${review.hash_hex}</div>
-      <div class="doc-meta">Version: v${review.version}</div>
-      <div class="doc-meta">Type: ${review.mime_type || "application/octet-stream"}</div>
-      <div class="doc-meta">Parent: ${review.parent_id || "root document"}</div>
-      <div class="doc-meta">Owner: ${review.owner_wallet || "unknown"}</div>
-      <div class="doc-meta">Arweave: ${review.arweave_tx || "not anchored"}</div>
-      <div class="doc-meta">Integrity: ${verified ? "verified" : "mismatch detected"}</div>
+      <div class="doc-meta">Document ID: ${escapeHtml(id)}</div>
+      <div class="doc-meta">Hash: ${escapeHtml(review.hash_hex)}</div>
+      <div class="doc-meta">Version: v${escapeHtml(review.version)}</div>
+      <div class="doc-meta">Type: ${escapeHtml(review.mime_type || "application/octet-stream")}</div>
+      <div class="doc-meta">Parent: ${escapeHtml(review.parent_id || "root document")}</div>
+      <div class="doc-meta">Owner: ${escapeHtml(review.owner_wallet || "unknown")}</div>
+      <div class="doc-meta">Arweave: ${escapeHtml(review.arweave_tx || "not anchored")}</div>
+      <div class="doc-meta">Integrity: ${escapeHtml(verified ? "verified" : "mismatch detected")}</div>
     `;
 
     previewRoot.innerHTML = "";
@@ -1370,7 +1374,7 @@ async function loadReviewPage() {
     toggleSignatureMode();
   } catch (err) {
     console.error(err);
-    previewRoot.innerHTML = `<div class='preview-fallback'><strong>Preview failed.</strong><div class='doc-meta'>${err.message}</div></div>`;
+    previewRoot.innerHTML = `<div class='preview-fallback'><strong>Preview failed.</strong><div class='doc-meta'>${escapeErrorMessage(err)}</div></div>`;
     metaRoot.innerHTML = "";
     eventsRoot.innerHTML = "";
   }
@@ -1528,18 +1532,18 @@ async function loadPublicSignPage() {
       : "File loaded, but the preview hash does not match the recorded custody hash.";
 
     metaRoot.innerHTML = `
-      <div class="doc-meta">Envelope ID: ${envelope.envelope_id}</div>
-      <div class="doc-meta">From: ${envelope.sender_wallet}</div>
-      <div class="doc-meta">Hash: ${envelope.hash_hex}</div>
-      <div class="doc-meta">Version: v${envelope.version}</div>
-      <div class="doc-meta">Arweave: ${envelope.arweave_tx || "not anchored"}</div>
-      <div class="doc-meta">Recipient name: ${envelope.recipient_name || "not provided"}</div>
-      <div class="doc-meta">Recipient wallet: ${envelope.recipient_wallet || "guest link"}</div>
-      <div class="doc-meta">Recipient email: ${envelope.recipient_email || "not provided"}</div>
-      <div class="doc-meta">Recipient phone: ${envelope.recipient_phone || "not provided"}</div>
-      <div class="doc-meta">Delivery: ${Array.isArray(envelope.delivery) && envelope.delivery.length ? envelope.delivery.map((item) => `${item.channel}/${item.provider}`).join(", ") : "draft link only"}</div>
-      <div class="doc-meta">Note: ${envelope.note || "No note"}</div>
-      <div class="doc-meta">Integrity: ${verified ? "verified" : "mismatch detected"}</div>
+      <div class="doc-meta">Envelope ID: ${escapeHtml(envelope.envelope_id)}</div>
+      <div class="doc-meta">From: ${escapeHtml(envelope.sender_wallet)}</div>
+      <div class="doc-meta">Hash: ${escapeHtml(envelope.hash_hex)}</div>
+      <div class="doc-meta">Version: v${escapeHtml(envelope.version)}</div>
+      <div class="doc-meta">Arweave: ${escapeHtml(envelope.arweave_tx || "not anchored")}</div>
+      <div class="doc-meta">Recipient name: ${escapeHtml(envelope.recipient_name || "not provided")}</div>
+      <div class="doc-meta">Recipient wallet: ${escapeHtml(envelope.recipient_wallet || "guest link")}</div>
+      <div class="doc-meta">Recipient email: ${escapeHtml(envelope.recipient_email || "not provided")}</div>
+      <div class="doc-meta">Recipient phone: ${escapeHtml(envelope.recipient_phone || "not provided")}</div>
+      <div class="doc-meta">Delivery: ${escapeHtml(Array.isArray(envelope.delivery) && envelope.delivery.length ? envelope.delivery.map((item) => `${item.channel}/${item.provider}`).join(", ") : "draft link only")}</div>
+      <div class="doc-meta">Note: ${escapeHtml(envelope.note || "No note")}</div>
+      <div class="doc-meta">Integrity: ${escapeHtml(verified ? "verified" : "mismatch detected")}</div>
     `;
 
     previewRoot.innerHTML = "";
@@ -1557,7 +1561,7 @@ async function loadPublicSignPage() {
     document.getElementById("publicSignSubmit").disabled = !verified;
     togglePublicSignatureMode();
   } catch (err) {
-    previewRoot.innerHTML = `<div class="preview-fallback"><strong>Envelope unavailable.</strong><div class="doc-meta">${err.message}</div></div>`;
+    previewRoot.innerHTML = `<div class="preview-fallback"><strong>Envelope unavailable.</strong><div class="doc-meta">${escapeErrorMessage(err)}</div></div>`;
   }
 }
 
@@ -1704,7 +1708,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loadSessionInfo();
     loadDocumentDetailsPage().catch((err) => {
       console.error(err);
-      document.getElementById("history").innerHTML = `<div class="event-card"><strong>Failed to load document.</strong><div class="event-meta">${err.message}</div></div>`;
+      document.getElementById("history").innerHTML = `<div class="event-card"><strong>Failed to load document.</strong><div class="event-meta">${escapeErrorMessage(err)}</div></div>`;
     });
     document.getElementById("shareBtn").onclick = shareSelectedDocument;
     document.getElementById("createVersionBtn").onclick = () =>
