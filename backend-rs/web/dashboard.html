@@ -27,6 +27,7 @@
       <button id="docsTabBtn" type="button">Inbox / Documents</button>
       <button id="sharedTabBtn" type="button">Shared</button>
       <button id="activityTabBtn" type="button">Shared Activity</button>
+      <button id="agentsTabBtn" type="button">Agents</button>
       <button id="billingTabBtn" type="button">Billing</button>
     </section>
 
@@ -121,6 +122,60 @@
           <button id="billingBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
         </div>
         <div id="billingStatus" class="session-card">Loading billing status…</div>
+      </div>
+    </div>
+
+    <div id="agentsTabPanel" class="hidden">
+      <section class="grid two-up">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Onboard Agent</h3>
+              <p class="muted">A wallet owner creates agent identities, issues tokens, and decides whether each agent should review, version, or sign.</p>
+            </div>
+            <button id="agentsBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
+          </div>
+          <div class="form-row">
+            <label for="agentLabel">Agent label</label>
+            <input id="agentLabel" placeholder="Legal review agent" />
+          </div>
+          <div class="grid two-up compact">
+            <div class="form-row">
+              <label for="agentProvider">Provider</label>
+              <input id="agentProvider" placeholder="OpenAI, Anthropic, internal, custom" />
+            </div>
+            <div class="form-row">
+              <label for="agentModel">Model / runtime</label>
+              <input id="agentModel" placeholder="gpt-5, Claude, internal-worker, etc." />
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="agentCapabilities">Capabilities</label>
+            <input id="agentCapabilities" placeholder="review, version, sign, summarize" />
+          </div>
+          <button id="registerAgentBtn" class="button-primary" type="button">Register Agent</button>
+          <pre id="agentRegisterResult" class="muted">No agent registered yet.</pre>
+        </div>
+
+        <div class="panel">
+          <h3>Single Agent Or Swarm?</h3>
+          <div id="agentStrategy" class="session-card">
+            <div class="doc-meta"><strong>Use one agent</strong> when the task is narrow, like review-only, summarization, or drafting under a human approval step.</div>
+            <div class="doc-meta"><strong>Use a swarm</strong> when you want separated roles, cross-checking, policy validation, or one agent proposing while another approves.</div>
+            <div class="doc-meta"><strong>Recommended model</strong>: one identity per agent role, never one shared token for the whole swarm.</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Registered Agents</h3>
+            <p class="muted">These identities are owned by the current wallet workspace and can be used with document policy and agent API routes.</p>
+          </div>
+          <button id="refreshAgentsBtn" class="button-secondary" type="button">Refresh</button>
+        </div>
+        <div id="agentList" class="doc-grid">Loading agents…</div>
       </div>
     </div>
   </div>

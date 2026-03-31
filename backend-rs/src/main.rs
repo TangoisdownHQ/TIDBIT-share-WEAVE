@@ -178,6 +178,7 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/public/envelope/:token/blob", get(public_envelope_blob_handler))
         .route("/api/public/envelope/:token/sign", post(public_envelope_sign_handler))
         .route("/api/agent/register", post(register_agent_handler))
+        .route("/api/agent/list", get(list_agents_handler))
         .route("/api/overview", get(overview_handler))
         .route("/api/account/status", get(account_status_handler))
         .route("/api/doc/list", get(list_docs_handler))
@@ -1873,6 +1874,44 @@ async fn register_agent_handler(
         "model": body.model,
         "capabilities": capabilities
     })))
+}
+
+async fn list_agents_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = session.wallet.clone();
+
+    let rows = sqlx::query(
+        r#"
+        select id, owner_wallet, label, provider, model, capabilities_json, is_active, created_at
+        from agent_identities
+        where owner_wallet = $1
+        order by created_at desc
+        "#,
+    )
+    .bind(&wallet)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                json!({
+                    "id": row.get::<uuid::Uuid,_>("id"),
+                    "owner_wallet": row.get::<String,_>("owner_wallet"),
+                    "label": row.get::<String,_>("label"),
+                    "provider": row.get::<Option<String>,_>("provider"),
+                    "model": row.get::<Option<String>,_>("model"),
+                    "capabilities": row.get::<serde_json::Value,_>("capabilities_json"),
+                    "is_active": row.get::<bool,_>("is_active"),
+                    "created_at": row.get::<chrono::DateTime<chrono::Utc>,_>("created_at")
+                })
+            })
+            .collect(),
+    ))
 }
 
 async fn agent_review_doc_handler(

@@ -462,6 +462,26 @@ function createSharedFileCard(item) {
   return card;
 }
 
+function normalizeCapabilityList(raw) {
+  if (Array.isArray(raw)) return raw.filter(Boolean).map((item) => String(item).trim()).filter(Boolean);
+  return String(raw || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function createAgentCard(agent) {
+  const card = createElement("div", { className: "doc-card" });
+  card.appendChild(createElement("h4", { text: agent.label || "(unnamed agent)" }));
+  card.appendChild(createMetaLine("Provider", agent.provider || "not specified"));
+  card.appendChild(createMetaLine("Model", agent.model || "not specified"));
+  card.appendChild(createMetaLine("Status", agent.is_active ? "active" : "inactive", { important: true }));
+  card.appendChild(createMetaLine("Agent ID", agent.id));
+  card.appendChild(createMetaLine("Capabilities", normalizeCapabilityList(agent.capabilities).join(", ") || "none listed"));
+  card.appendChild(createMetaLine("Created", new Date(agent.created_at).toLocaleString()));
+  return card;
+}
+
 function createSimpleInfoBlock(title, rows) {
   const fragment = document.createDocumentFragment();
   if (title) {
@@ -545,28 +565,33 @@ function switchDashboardTab(tabName) {
   const docsPanel = document.getElementById("docsTabPanel");
   const sharedPanel = document.getElementById("sharedTabPanel");
   const activityPanel = document.getElementById("activityTabPanel");
+  const agentsPanel = document.getElementById("agentsTabPanel");
   const billingPanel = document.getElementById("billingTabPanel");
   const homeBtn = document.getElementById("homeTabBtn");
   const docsBtn = document.getElementById("docsTabBtn");
   const sharedBtn = document.getElementById("sharedTabBtn");
   const activityBtn = document.getElementById("activityTabBtn");
+  const agentsBtn = document.getElementById("agentsTabBtn");
   const billingBtn = document.getElementById("billingTabBtn");
-  if (!homePanel || !docsPanel || !sharedPanel || !activityPanel || !billingPanel || !homeBtn || !docsBtn || !sharedBtn || !activityBtn || !billingBtn) return;
+  if (!homePanel || !docsPanel || !sharedPanel || !activityPanel || !agentsPanel || !billingPanel || !homeBtn || !docsBtn || !sharedBtn || !activityBtn || !agentsBtn || !billingBtn) return;
 
   const showHome = tabName === "home";
   const showDocs = tabName === "docs";
   const showShared = tabName === "shared";
   const showActivity = tabName === "activity";
+  const showAgents = tabName === "agents";
   const showBilling = tabName === "billing";
   homePanel.classList.toggle("hidden", !showHome);
   docsPanel.classList.toggle("hidden", !showDocs);
   sharedPanel.classList.toggle("hidden", !showShared);
   activityPanel.classList.toggle("hidden", !showActivity);
+  agentsPanel.classList.toggle("hidden", !showAgents);
   billingPanel.classList.toggle("hidden", !showBilling);
   homeBtn.classList.toggle("button-primary", showHome);
   docsBtn.classList.toggle("button-primary", showDocs);
   sharedBtn.classList.toggle("button-primary", showShared);
   activityBtn.classList.toggle("button-primary", showActivity);
+  agentsBtn.classList.toggle("button-primary", showAgents);
   billingBtn.classList.toggle("button-primary", showBilling);
 }
 
@@ -798,6 +823,69 @@ async function loadBillingStatus() {
   } catch (err) {
     setContent(box, createMessageCard("event-card neutral-event", "Billing unavailable.", err?.message || "Unexpected error", "event-meta"));
   }
+}
+
+async function loadAgents() {
+  const box = document.getElementById("agentList");
+  if (!box) return;
+  try {
+    const agents = await apiGet("/api/agent/list");
+    if (!agents.length) {
+      setContent(
+        box,
+        createMessageCard("doc-card", "No agents registered yet.", "Create one agent for focused work or several role-based agents for a swarm.")
+      );
+      return;
+    }
+    setContent(box, ...agents.map((agent) => createAgentCard(agent)));
+  } catch (err) {
+    setContent(box, createMessageCard("doc-card", "Agents unavailable.", err?.message || "Unexpected error"));
+  }
+}
+
+async function registerAgent() {
+  const label = document.getElementById("agentLabel")?.value.trim();
+  const provider = document.getElementById("agentProvider")?.value.trim();
+  const model = document.getElementById("agentModel")?.value.trim();
+  const capabilities = normalizeCapabilityList(document.getElementById("agentCapabilities")?.value);
+  const resultBox = document.getElementById("agentRegisterResult");
+
+  if (!label) {
+    alert("Agent label is required.");
+    return;
+  }
+
+  const result = await apiPost("/api/agent/register", {
+    label,
+    provider: provider || null,
+    model: model || null,
+    capabilities,
+  });
+
+  if (resultBox) {
+    resultBox.textContent = JSON.stringify(
+      {
+        ok: result.ok,
+        agent_id: result.agent_id,
+        owner_wallet: result.owner_wallet,
+        label: result.label,
+        provider: result.provider,
+        model: result.model,
+        capabilities: result.capabilities,
+        token: result.token,
+        note: "Store this token now. It is the runtime credential for the agent API.",
+      },
+      null,
+      2
+    );
+  }
+
+  ["agentLabel", "agentProvider", "agentModel", "agentCapabilities"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+
+  await loadAgents();
 }
 
 // ================== SHARE ==================
@@ -1758,17 +1846,22 @@ document.addEventListener("DOMContentLoaded", () => {
     loadInbox();
     loadSharedFiles();
     loadSharedActivity();
+    loadAgents();
     loadBillingStatus();
     document.getElementById("homeTabBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("docsTabBtn")?.addEventListener("click", () => switchDashboardTab("docs"));
     document.getElementById("sharedTabBtn")?.addEventListener("click", () => switchDashboardTab("shared"));
     document.getElementById("activityTabBtn")?.addEventListener("click", () => switchDashboardTab("activity"));
+    document.getElementById("agentsTabBtn")?.addEventListener("click", () => switchDashboardTab("agents"));
     document.getElementById("billingTabBtn")?.addEventListener("click", () => switchDashboardTab("billing"));
     document.getElementById("docsBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("inboxBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("sharedBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("activityBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
+    document.getElementById("agentsBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("billingBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
+    document.getElementById("registerAgentBtn")?.addEventListener("click", () => registerAgent().catch((err) => alert(err.message)));
+    document.getElementById("refreshAgentsBtn")?.addEventListener("click", () => loadAgents().catch((err) => alert(err.message)));
     switchDashboardTab("home");
     document.getElementById("uploadBtn").onclick = uploadDoc;
     document.getElementById("shareBtn").onclick = shareSelectedDocument;
