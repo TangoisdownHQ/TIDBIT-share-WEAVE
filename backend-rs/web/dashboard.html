@@ -177,6 +177,84 @@
         </div>
         <div id="agentList" class="doc-grid">Loading agents…</div>
       </div>
+
+      <section class="grid two-up">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Document Agent Policy</h3>
+              <p class="muted">Choose which agents can review or sign a document and whether a human countersign is still required.</p>
+            </div>
+            <button id="refreshAgentPolicyBtn" class="button-secondary" type="button">Reload</button>
+          </div>
+          <div class="form-row">
+            <label for="agentPolicyDoc">Document</label>
+            <select id="agentPolicyDoc"></select>
+          </div>
+          <div class="grid two-up compact">
+            <label class="toggle-row" for="agentPolicyAllowReview">
+              <input type="checkbox" id="agentPolicyAllowReview" />
+              <span>Allow agent review</span>
+            </label>
+            <label class="toggle-row" for="agentPolicyAllowSign">
+              <input type="checkbox" id="agentPolicyAllowSign" />
+              <span>Allow agent sign</span>
+            </label>
+          </div>
+          <div class="grid two-up compact">
+            <label class="toggle-row" for="agentPolicyRequireCountersign">
+              <input type="checkbox" id="agentPolicyRequireCountersign" />
+              <span>Require human countersign</span>
+            </label>
+            <label class="toggle-row" for="agentPolicyAllowGuest">
+              <input type="checkbox" id="agentPolicyAllowGuest" />
+              <span>Allow guest sign</span>
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Allowed agents</label>
+            <div id="agentPolicyAllowedList" class="field-list">No agents registered yet.</div>
+          </div>
+          <button id="saveAgentPolicyBtn" class="button-primary" type="button">Save Policy</button>
+          <pre id="agentPolicyResult" class="muted">No policy loaded yet.</pre>
+        </div>
+
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Swarm Templates</h3>
+              <p class="muted">Start with a template, then save it into the selected document policy.</p>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="swarmTemplate">Template</label>
+            <select id="swarmTemplate">
+              <option value="single-reviewer">Single reviewer</option>
+              <option value="review-plus-human-sign">Review plus human sign</option>
+              <option value="swarm-review-board">Swarm review board</option>
+              <option value="agent-autonomous-sign">Agent autonomous sign</option>
+            </select>
+          </div>
+          <button id="applySwarmTemplateBtn" class="button-primary" type="button">Apply Template</button>
+          <div id="swarmTemplateSummary" class="session-card">
+            <div class="doc-meta"><strong>Single reviewer</strong>: one agent can review and create versions, but humans still control final approval.</div>
+            <div class="doc-meta"><strong>Review plus human sign</strong>: one or more agents review, but signing stays human.</div>
+            <div class="doc-meta"><strong>Swarm review board</strong>: multiple role-specific agents can review and version while human countersign remains required.</div>
+            <div class="doc-meta"><strong>Agent autonomous sign</strong>: only for low-risk machine workflows where you explicitly allow agent signing.</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Agent Activity</h3>
+            <p class="muted">Agent-specific review, version, and signing actions pulled out of the shared activity stream.</p>
+          </div>
+          <button id="refreshAgentActivityBtn" class="button-secondary" type="button">Refresh</button>
+        </div>
+        <div id="agentActivityList" class="inbox-list">Loading agent activity…</div>
+      </div>
     </div>
   </div>
 

@@ -10,6 +10,8 @@ let reviewDocument = null;
 let selectedVersionParent = null;
 let activeFieldTool = null;
 let currentDocumentDetails = null;
+let ownedDocumentsCache = [];
+let agentsCache = [];
 
 // ================== SESSION ==================
 function saveSessionId(sid) {
@@ -536,12 +538,38 @@ async function loadSessionInfo() {
 
 async function loadDocuments() {
   const docs = await apiGet("/api/doc/list");
+  ownedDocumentsCache = docs.filter((doc) => doc.access_kind !== "shared");
   const list = document.getElementById("docList");
   if (!docs.length) {
     setContent(list, createMessageCard("doc-card", "No documents yet.", "Upload a file to begin a custody trail."));
     return;
   }
   setContent(list, ...docs.map((doc) => createDocumentCard(doc)));
+}
+
+function populateAgentPolicyDocOptions() {
+  const select = document.getElementById("agentPolicyDoc");
+  const resultBox = document.getElementById("agentPolicyResult");
+  if (!select) return;
+  select.replaceChildren();
+
+  if (!ownedDocumentsCache.length) {
+    const option = createElement("option", { text: "No owned documents available" });
+    option.value = "";
+    select.appendChild(option);
+    if (resultBox) resultBox.textContent = "No owner-controlled documents available for agent policy yet.";
+    return;
+  }
+
+  ownedDocumentsCache.forEach((doc) => {
+    const option = createElement("option", { text: `${doc.label || "(untitled document)"} · v${doc.version}` });
+    option.value = doc.id;
+    select.appendChild(option);
+  });
+
+  if (!select.value && ownedDocumentsCache[0]) {
+    select.value = ownedDocumentsCache[0].id;
+  }
 }
 
 async function loadOverview() {
@@ -830,6 +858,11 @@ async function loadAgents() {
   if (!box) return;
   try {
     const agents = await apiGet("/api/agent/list");
+    agentsCache = agents;
+    renderAllowedAgentChecklist();
+    if (document.getElementById("agentPolicyDoc")?.value) {
+      loadAgentPolicy().catch(() => {});
+    }
     if (!agents.length) {
       setContent(
         box,
@@ -840,6 +873,173 @@ async function loadAgents() {
     setContent(box, ...agents.map((agent) => createAgentCard(agent)));
   } catch (err) {
     setContent(box, createMessageCard("doc-card", "Agents unavailable.", err?.message || "Unexpected error"));
+  }
+}
+
+function renderAllowedAgentChecklist(selectedIds = []) {
+  const root = document.getElementById("agentPolicyAllowedList");
+  if (!root) return;
+
+  if (!agentsCache.length) {
+    setContent(root, createMessageCard("field-chip", "No agents available.", "Register an agent first."));
+    return;
+  }
+
+  setContent(
+    root,
+    ...agentsCache.map((agent) => {
+      const wrapper = createElement("label", { className: "field-chip" });
+      const textWrap = createElement("div");
+      textWrap.appendChild(createElement("strong", { text: agent.label || "(unnamed agent)" }));
+      textWrap.appendChild(
+        createElement("div", {
+          className: "doc-meta",
+          text: `${agent.provider || "provider?"} · ${agent.model || "model?"} · ${normalizeCapabilityList(agent.capabilities).join(", ") || "no capabilities listed"}`,
+        })
+      );
+      const checkbox = createElement("input", { type: "checkbox" });
+      checkbox.value = agent.id;
+      checkbox.checked = selectedIds.includes(String(agent.id));
+      wrapper.append(textWrap, checkbox);
+      return wrapper;
+    })
+  );
+}
+
+async function loadAgentPolicy() {
+  const select = document.getElementById("agentPolicyDoc");
+  const resultBox = document.getElementById("agentPolicyResult");
+  if (!select) return;
+  const docId = select.value;
+  if (!docId) {
+    resultBox && (resultBox.textContent = "No owner-controlled document selected.");
+    return;
+  }
+
+  const response = await apiGet(`/api/doc/${encodeURIComponent(docId)}/policy`);
+  const policy = response.policy_json || {};
+  document.getElementById("agentPolicyAllowReview").checked = Boolean(policy.allow_agent_review);
+  document.getElementById("agentPolicyAllowSign").checked = Boolean(policy.allow_agent_sign);
+  document.getElementById("agentPolicyRequireCountersign").checked = Boolean(policy.require_human_countersign);
+  document.getElementById("agentPolicyAllowGuest").checked = Boolean(policy.allow_guest_sign);
+  renderAllowedAgentChecklist((policy.allowed_agent_ids || []).map(String));
+  if (resultBox) {
+    resultBox.textContent = JSON.stringify(policy, null, 2);
+  }
+}
+
+function currentPolicyFromForm() {
+  const selectedIds = Array.from(document.querySelectorAll('#agentPolicyAllowedList input[type="checkbox"]:checked'))
+    .map((input) => input.value);
+
+  return {
+    allow_guest_sign: document.getElementById("agentPolicyAllowGuest").checked,
+    allow_agent_review: document.getElementById("agentPolicyAllowReview").checked,
+    allow_agent_sign: document.getElementById("agentPolicyAllowSign").checked,
+    require_human_countersign: document.getElementById("agentPolicyRequireCountersign").checked,
+    allowed_agent_ids: selectedIds,
+    allowed_wallet_signers: [],
+  };
+}
+
+async function saveAgentPolicy() {
+  const docId = document.getElementById("agentPolicyDoc")?.value;
+  const resultBox = document.getElementById("agentPolicyResult");
+  if (!docId) {
+    alert("Choose a document first.");
+    return;
+  }
+  const policy_json = currentPolicyFromForm();
+  const result = await apiPost(`/api/doc/${encodeURIComponent(docId)}/policy`, { policy_json });
+  if (resultBox) {
+    resultBox.textContent = JSON.stringify(result, null, 2);
+  }
+  await loadSharedActivity();
+  await loadAgentActivity();
+}
+
+function applySwarmTemplate() {
+  const template = document.getElementById("swarmTemplate")?.value || "single-reviewer";
+  const allAgentIds = agentsCache.map((agent) => String(agent.id));
+  let policy;
+
+  if (template === "review-plus-human-sign") {
+    policy = {
+      allow_guest_sign: true,
+      allow_agent_review: true,
+      allow_agent_sign: false,
+      require_human_countersign: true,
+      allowed_agent_ids: allAgentIds,
+      allowed_wallet_signers: [],
+    };
+  } else if (template === "swarm-review-board") {
+    policy = {
+      allow_guest_sign: false,
+      allow_agent_review: true,
+      allow_agent_sign: false,
+      require_human_countersign: true,
+      allowed_agent_ids: allAgentIds,
+      allowed_wallet_signers: [],
+    };
+  } else if (template === "agent-autonomous-sign") {
+    policy = {
+      allow_guest_sign: false,
+      allow_agent_review: true,
+      allow_agent_sign: true,
+      require_human_countersign: false,
+      allowed_agent_ids: allAgentIds,
+      allowed_wallet_signers: [],
+    };
+  } else {
+    policy = {
+      allow_guest_sign: true,
+      allow_agent_review: true,
+      allow_agent_sign: false,
+      require_human_countersign: true,
+      allowed_agent_ids: allAgentIds.slice(0, 1),
+      allowed_wallet_signers: [],
+    };
+  }
+
+  document.getElementById("agentPolicyAllowReview").checked = Boolean(policy.allow_agent_review);
+  document.getElementById("agentPolicyAllowSign").checked = Boolean(policy.allow_agent_sign);
+  document.getElementById("agentPolicyRequireCountersign").checked = Boolean(policy.require_human_countersign);
+  document.getElementById("agentPolicyAllowGuest").checked = Boolean(policy.allow_guest_sign);
+  renderAllowedAgentChecklist(policy.allowed_agent_ids);
+  const resultBox = document.getElementById("agentPolicyResult");
+  if (resultBox) {
+    resultBox.textContent = JSON.stringify(
+      {
+        template,
+        policy,
+        note: "Template applied locally. Save policy to persist it on the selected document.",
+      },
+      null,
+      2
+    );
+  }
+}
+
+async function loadAgentActivity() {
+  const box = document.getElementById("agentActivityList");
+  if (!box) return;
+  try {
+    const items = await apiGet("/api/activity/shared");
+    const agentItems = items.filter((event) => {
+      const actorKind = event?.payload?.actor?.kind;
+      const actorChain = event?.payload?.actor_chain;
+      return actorKind === "agent" || actorChain === "agent-api" || String(event.actor_wallet || "").startsWith("agent:");
+    });
+    if (!agentItems.length) {
+      setContent(
+        box,
+        createMessageCard("event-card neutral-event", "No agent activity yet.", "Agent review, version, and sign events will appear here.", "event-meta")
+      );
+      return;
+    }
+    setContent(box, renderHistoryCards(agentItems, { currentWallet, aggregate: true }));
+  } catch (err) {
+    setContent(box, createMessageCard("event-card neutral-event", "Agent activity unavailable.", err?.message || "Unexpected error", "event-meta"));
   }
 }
 
@@ -1147,6 +1347,8 @@ async function refreshDashboardData() {
   if (document.getElementById("inboxList")) await loadInbox();
   if (document.getElementById("sharedList")) await loadSharedFiles();
   if (document.getElementById("sharedActivityList")) await loadSharedActivity();
+  if (document.getElementById("agentList")) await loadAgents();
+  if (document.getElementById("agentActivityList")) await loadAgentActivity();
   if (document.getElementById("billingStatus")) await loadBillingStatus();
 }
 
@@ -1842,11 +2044,19 @@ document.addEventListener("DOMContentLoaded", () => {
   if (document.getElementById("docList")) {
     loadSessionInfo();
     loadOverview().catch((err) => alert(err.message));
-    loadDocuments();
+    loadDocuments()
+      .then(async () => {
+        populateAgentPolicyDocOptions();
+        if (document.getElementById("agentPolicyDoc")?.value) {
+          await loadAgentPolicy();
+        }
+      })
+      .catch((err) => alert(err.message));
     loadInbox();
     loadSharedFiles();
     loadSharedActivity();
     loadAgents();
+    loadAgentActivity();
     loadBillingStatus();
     document.getElementById("homeTabBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("docsTabBtn")?.addEventListener("click", () => switchDashboardTab("docs"));
@@ -1862,6 +2072,11 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("billingBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("registerAgentBtn")?.addEventListener("click", () => registerAgent().catch((err) => alert(err.message)));
     document.getElementById("refreshAgentsBtn")?.addEventListener("click", () => loadAgents().catch((err) => alert(err.message)));
+    document.getElementById("agentPolicyDoc")?.addEventListener("change", () => loadAgentPolicy().catch((err) => alert(err.message)));
+    document.getElementById("refreshAgentPolicyBtn")?.addEventListener("click", () => loadAgentPolicy().catch((err) => alert(err.message)));
+    document.getElementById("saveAgentPolicyBtn")?.addEventListener("click", () => saveAgentPolicy().catch((err) => alert(err.message)));
+    document.getElementById("applySwarmTemplateBtn")?.addEventListener("click", applySwarmTemplate);
+    document.getElementById("refreshAgentActivityBtn")?.addEventListener("click", () => loadAgentActivity().catch((err) => alert(err.message)));
     switchDashboardTab("home");
     document.getElementById("uploadBtn").onclick = uploadDoc;
     document.getElementById("shareBtn").onclick = shareSelectedDocument;
