@@ -22,10 +22,16 @@ impl SupabaseStorage {
     pub fn new(url: String, service_key: String, bucket: String) -> Self {
         Self {
             url: url.trim_end_matches('/').to_string(),
-            service_key,
+            service_key: service_key.trim().to_string(),
             bucket,
             client: Client::new(),
         }
+    }
+
+    fn authed_request(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        builder
+            .bearer_auth(&self.service_key)
+            .header("apikey", &self.service_key)
     }
 
     fn sanitize_path_segment(segment: &str) -> String {
@@ -68,9 +74,8 @@ impl SupabaseStorage {
         let path = Self::expected_object_path(document_owner, document_id, version, &hash_hex);
         let url = format!("{}/storage/v1/object/{}/{}", self.url, self.bucket, path);
 
-        let res = self.client
-            .put(&url)
-            .bearer_auth(&self.service_key)
+        let res = self
+            .authed_request(self.client.put(&url))
             .header("Content-Type", content_type)
             .header("x-upsert", "true")   //  REQUIRED
             .body(bytes.to_vec())
@@ -93,12 +98,7 @@ impl SupabaseStorage {
             self.url, self.bucket, storage_path
         );
 
-        let res = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.service_key)
-            .send()
-            .await?;
+        let res = self.authed_request(self.client.get(&url)).send().await?;
 
         if res.status().is_success() {
             return Ok(true);
@@ -129,12 +129,7 @@ impl SupabaseStorage {
             self.url, self.bucket, storage_path
         );
 
-        let res = self
-            .client
-            .get(&url)
-            .bearer_auth(&self.service_key)
-            .send()
-            .await?;
+        let res = self.authed_request(self.client.get(&url)).send().await?;
 
         let status = res.status();
         if !status.is_success() {
@@ -153,9 +148,7 @@ impl SupabaseStorage {
         let url = format!("{}/storage/v1/object/move", self.url);
 
         let res = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.service_key)
+            .authed_request(self.client.post(&url))
             .json(&serde_json::json!({
                 "bucketId": self.bucket,
                 "sourceKey": source_path,
@@ -190,9 +183,7 @@ impl SupabaseStorage {
         );
 
         let res = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.service_key)
+            .authed_request(self.client.post(&url))
             .json(&serde_json::json!({ "expiresIn": expires_in }))
             .send()
             .await?;
