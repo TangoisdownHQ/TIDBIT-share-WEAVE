@@ -209,7 +209,11 @@ async fn start_server() -> anyhow::Result<()> {
         .with_state(state)
         .layer(CorsLayer::permissive());
 
-    let addr: std::net::SocketAddr = "0.0.0.0:4100".parse().unwrap();
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|value| value.trim().parse::<u16>().ok())
+        .unwrap_or(4100);
+    let addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
 
     println!("Server running at http://{addr}");
 
