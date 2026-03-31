@@ -22,6 +22,16 @@ No central authority.
 No silent mutation.
 Every action is signed, linked, and traceable.
 
+## 📚 Documentation
+
+Project documentation now lives in:
+
+- [Documentation Hub](./docs/README.md)
+- [User Guide](./docs/user-guide.md)
+- [Architecture](./docs/architecture.md)
+- [Code Walkthrough](./docs/code-walkthrough.md)
+- [Audit Folder](./audit/README.md)
+
 ## 🧠 What Makes TIDBIT-share-WEAVE Different
 
 Unlike traditional file-sharing platforms, TIDBIT-share-WEAVE treats files as cryptographic entities, not just data blobs.

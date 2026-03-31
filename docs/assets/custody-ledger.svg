@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="740" viewBox="0 0 1280 740" role="img" aria-labelledby="title desc">
+  <title id="title">Custody ledger diagram</title>
+  <desc id="desc">A themed audit ledger diagram showing one document id with sender and recipient events recorded into document events.</desc>
+  <rect width="1280" height="740" fill="#09162b"/>
+  <text x="70" y="70" fill="#f3f5fb" font-size="34" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Custody Ledger Model</text>
+  <text x="70" y="102" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">One document id, one ledger, many actor events.</text>
+
+  <rect x="490" y="120" rx="26" ry="26" width="320" height="120" fill="#132449" stroke="#406fdd" stroke-width="2"/>
+  <text x="552" y="172" fill="#f3f5fb" font-size="28" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Document</text>
+  <text x="542" y="205" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">doc_id = shared custody root</text>
+
+  <rect x="120" y="300" rx="24" ry="24" width="360" height="300" fill="#2b1320" stroke="#d2475d" stroke-width="2"/>
+  <text x="155" y="352" fill="#f3f5fb" font-size="26" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Sender Events</text>
+  <text x="155" y="394" fill="#ffd6dd" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">UPLOAD</text>
+  <text x="155" y="426" fill="#ffd6dd" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">SHARE</text>
+  <text x="155" y="458" fill="#ffd6dd" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">DELIVERY_DISPATCHED / FAILED</text>
+  <text x="155" y="490" fill="#ffd6dd" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">VERSION_CREATED</text>
+  <text x="155" y="522" fill="#ffd6dd" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">DELETE</text>
+  <text x="155" y="554" fill="#ffd6dd" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">EVIDENCE_ANCHORED</text>
+
+  <rect x="800" y="300" rx="24" ry="24" width="360" height="300" fill="#143d2c" stroke="#2f8c62" stroke-width="2"/>
+  <text x="835" y="352" fill="#f3f5fb" font-size="26" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Recipient Events</text>
+  <text x="835" y="394" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">INBOX_REVIEWED</text>
+  <text x="835" y="426" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">VIEW</text>
+  <text x="835" y="458" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">DOWNLOAD</text>
+  <text x="835" y="490" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">SIGN</text>
+  <text x="835" y="522" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">ENVELOPE_OPENED / COMPLETED</text>
+
+  <rect x="430" y="610" rx="18" ry="18" width="440" height="70" fill="#0c1730" stroke="#406fdd" stroke-width="2"/>
+  <text x="458" y="654" fill="#f4d2a1" font-size="20" font-family="Avenir Next, Segoe UI, sans-serif">All of these are stored in document_events and queried by doc_id.</text>
+
+  <path d="M490 210 L350 300" stroke="#d2475d" stroke-width="6" fill="none"/>
+  <path d="M810 210 L930 300" stroke="#2f8c62" stroke-width="6" fill="none"/>
+</svg>

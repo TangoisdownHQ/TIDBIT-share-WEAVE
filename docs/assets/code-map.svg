@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Code map</title>
+  <desc id="desc">A themed code map showing the main backend and frontend modules of TIDBIT-share-WEAVE.</desc>
+  <rect width="1280" height="760" fill="#09162b"/>
+  <text x="70" y="70" fill="#f3f5fb" font-size="34" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Code Map</text>
+  <text x="70" y="102" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Where the major runtime pieces live in the repository.</text>
+
+  <rect x="60" y="150" rx="24" ry="24" width="520" height="520" fill="#132449" stroke="#406fdd" stroke-width="2"/>
+  <text x="96" y="198" fill="#f3f5fb" font-size="28" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">backend-rs/src</text>
+  <text x="96" y="246" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">main.rs</text>
+  <text x="96" y="274" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">routes, AppState, handlers, custody logic</text>
+  <text x="96" y="320" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">identity_web/</text>
+  <text x="96" y="348" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet login, nonce, session state</text>
+  <text x="96" y="394" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">crypto/ + pqc/</text>
+  <text x="96" y="422" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">canonical messages, hashing, PQ helpers</text>
+  <text x="96" y="468" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">storage/</text>
+  <text x="96" y="496" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Supabase Storage integration</text>
+  <text x="96" y="542" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">delivery.rs</text>
+  <text x="96" y="570" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Resend + Twilio delivery status</text>
+
+  <rect x="680" y="150" rx="24" ry="24" width="540" height="520" fill="#2b1320" stroke="#d2475d" stroke-width="2"/>
+  <text x="716" y="198" fill="#f3f5fb" font-size="28" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">backend-rs/web</text>
+  <text x="716" y="246" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">index.html</text>
+  <text x="716" y="274" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet login entry point</text>
+  <text x="716" y="320" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">dashboard.html</text>
+  <text x="716" y="348" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">home, inbox/documents, shared, activity, billing</text>
+  <text x="716" y="394" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">document.html / review.html</text>
+  <text x="716" y="422" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">details, timeline, review, signing</text>
+  <text x="716" y="468" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">public-sign.html</text>
+  <text x="716" y="496" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">public envelope completion flow</text>
+  <text x="716" y="542" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">app.js + style.css</text>
+  <text x="716" y="570" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">behavior, rendering, theme, event cards</text>
+</svg>

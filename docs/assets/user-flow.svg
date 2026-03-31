@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">TIDBIT-share-WEAVE user flow</title>
+  <desc id="desc">A themed flow diagram showing login, upload, review, share, inbox, sign, and evidence export.</desc>
+  <rect width="1280" height="720" fill="#09162b"/>
+  <text x="70" y="70" fill="#f3f5fb" font-size="34" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">User Flow</text>
+  <text x="70" y="102" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">How a sender and recipient move through the app.</text>
+
+  <g font-family="Avenir Next, Segoe UI, sans-serif">
+    <rect x="70" y="180" rx="22" ry="22" width="180" height="92" fill="#132449" stroke="#406fdd" stroke-width="2"/>
+    <text x="105" y="232" fill="#f3f5fb" font-size="24" font-weight="700">Login</text>
+    <text x="100" y="257" fill="#a8b3d1" font-size="15">MetaMask / Phantom</text>
+
+    <rect x="310" y="180" rx="22" ry="22" width="190" height="92" fill="#132449" stroke="#d2475d" stroke-width="2"/>
+    <text x="350" y="232" fill="#f3f5fb" font-size="24" font-weight="700">Upload</text>
+    <text x="338" y="257" fill="#a8b3d1" font-size="15">start custody record</text>
+
+    <rect x="560" y="180" rx="22" ry="22" width="220" height="92" fill="#132449" stroke="#406fdd" stroke-width="2"/>
+    <text x="612" y="232" fill="#f3f5fb" font-size="24" font-weight="700">Review</text>
+    <text x="586" y="257" fill="#a8b3d1" font-size="15">hash verify + preview</text>
+
+    <rect x="840" y="180" rx="22" ry="22" width="220" height="92" fill="#2b1320" stroke="#d2475d" stroke-width="2"/>
+    <text x="895" y="232" fill="#f3f5fb" font-size="24" font-weight="700">Share</text>
+    <text x="866" y="257" fill="#f4d2a1" font-size="15">wallet / email / SMS</text>
+
+    <rect x="950" y="390" rx="22" ry="22" width="220" height="92" fill="#143d2c" stroke="#2f8c62" stroke-width="2"/>
+    <text x="995" y="442" fill="#f3f5fb" font-size="24" font-weight="700">Inbox</text>
+    <text x="976" y="467" fill="#d8f7e7" font-size="15">recipient sees file</text>
+
+    <rect x="630" y="390" rx="22" ry="22" width="220" height="92" fill="#143d2c" stroke="#2f8c62" stroke-width="2"/>
+    <text x="680" y="442" fill="#f3f5fb" font-size="24" font-weight="700">Sign</text>
+    <text x="654" y="467" fill="#d8f7e7" font-size="15">EVM / Solana / PQ</text>
+
+    <rect x="330" y="390" rx="22" ry="22" width="220" height="92" fill="#132449" stroke="#406fdd" stroke-width="2"/>
+    <text x="362" y="442" fill="#f3f5fb" font-size="24" font-weight="700">Document Details</text>
+    <text x="369" y="467" fill="#a8b3d1" font-size="15">lineage + timeline</text>
+
+    <rect x="70" y="390" rx="22" ry="22" width="180" height="92" fill="#132449" stroke="#406fdd" stroke-width="2"/>
+    <text x="92" y="442" fill="#f3f5fb" font-size="24" font-weight="700">Evidence</text>
+    <text x="96" y="467" fill="#a8b3d1" font-size="15">export / anchor</text>
+
+    <path d="M250 226 L310 226" stroke="#406fdd" stroke-width="6" fill="none"/>
+    <path d="M500 226 L560 226" stroke="#406fdd" stroke-width="6" fill="none"/>
+    <path d="M780 226 L840 226" stroke="#d2475d" stroke-width="6" fill="none"/>
+    <path d="M950 272 L1060 390" stroke="#2f8c62" stroke-width="6" fill="none"/>
+    <path d="M950 272 L740 390" stroke="#2f8c62" stroke-width="6" fill="none"/>
+    <path d="M740 482 L550 482" stroke="#d2475d" stroke-width="6" fill="none"/>
+    <path d="M330 482 L250 482" stroke="#406fdd" stroke-width="6" fill="none"/>
+
+    <text x="360" y="560" fill="#f3f5fb" font-size="24" font-weight="700">Always Recorded</text>
+    <text x="360" y="596" fill="#a8b3d1" font-size="18">UPLOAD · VIEW · DOWNLOAD · SHARE · SIGN · VERSION_CREATED · DELIVERY_* · ENVELOPE_* </text>
+  </g>
+</svg>
