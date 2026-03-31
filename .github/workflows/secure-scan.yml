@@ -1,0 +1,22 @@
+name: Secure Scan
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "21 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  secureci:
+    uses: TangoisdownHQ/TID-SecureCI/.github/workflows/tid-secureci.yml@master
+    secrets: inherit
+    with:
+      enforce: false
+      fail_severity: HIGH,CRITICAL
