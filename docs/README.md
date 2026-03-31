@@ -6,6 +6,7 @@ This documentation set explains what the app does, how the backend and frontend 
 
 - [User Guide](./user-guide.md)
 - [Review And Custody Concepts](./review-and-custody-concepts.md)
+- [Agent Workflows](./agent-workflows.md)
 - [Architecture](./architecture.md)
 - [Code Walkthrough](./code-walkthrough.md)
 - [Security Audit Folder](../audit/README.md)
@@ -34,9 +35,10 @@ If you are new to the project:
 
 1. Start with the [User Guide](./user-guide.md) to understand the screens and flows.
 2. Read [Review And Custody Concepts](./review-and-custody-concepts.md) to understand why review, signing, versioning, and custody are treated as separate concepts.
-3. Read [Architecture](./architecture.md) to understand how the browser, backend, Supabase, and Arweave fit together.
-4. Read [Code Walkthrough](./code-walkthrough.md) to understand how the implementation is organized.
-5. Read the [Security Audit Folder](../audit/README.md) to understand dependency and audit history.
+3. Read [Agent Workflows](./agent-workflows.md) to understand how individual agents and swarms can review, version, and sign with policy controls.
+4. Read [Architecture](./architecture.md) to understand how the browser, backend, Supabase, and Arweave fit together.
+5. Read [Code Walkthrough](./code-walkthrough.md) to understand how the implementation is organized.
+6. Read the [Security Audit Folder](../audit/README.md) to understand dependency and audit history.
 
 ## Current Product Surface
 
@@ -84,6 +86,7 @@ For production discipline, these workflows should be required in GitHub branch p
 ## Recommended Reading Order
 
 1. Read the [User Guide](./user-guide.md) to understand the product from the user side.
-2. Read the [Architecture](./architecture.md) to understand the data flow and security model.
-3. Read the [Code Walkthrough](./code-walkthrough.md) to understand how the code is organized.
-4. Read the [Audit Folder](../audit/README.md) to review dependencies and the current Rust audit status.
+2. Read the [Agent Workflows](./agent-workflows.md) to understand agent onboarding, policy, and multi-agent collaboration.
+3. Read the [Architecture](./architecture.md) to understand the data flow and security model.
+4. Read the [Code Walkthrough](./code-walkthrough.md) to understand how the code is organized.
+5. Read the [Audit Folder](../audit/README.md) to review dependencies and the current Rust audit status.

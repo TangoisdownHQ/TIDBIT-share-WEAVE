@@ -346,6 +346,19 @@ progress {
   gap: 20px;
 }
 
+.marketing-video-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.marketing-video-card {
+  min-height: 220px;
+  background:
+    linear-gradient(180deg, rgba(11, 15, 28, 0.94), rgba(6, 10, 18, 0.98)),
+    radial-gradient(circle at top right, rgba(210, 71, 93, 0.12), transparent 30%);
+}
+
 .pricing-grid {
   align-items: stretch;
 }
@@ -739,7 +752,8 @@ progress {
   .marketing-hero,
   .marketing-grid,
   .marketing-steps,
-  .marketing-columns {
+  .marketing-columns,
+  .marketing-video-grid {
     grid-template-columns: 1fr;
   }
 
