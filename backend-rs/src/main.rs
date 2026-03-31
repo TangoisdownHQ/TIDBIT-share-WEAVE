@@ -170,8 +170,10 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/public/envelope/:token/sign", post(public_envelope_sign_handler))
         .route("/api/agent/register", post(register_agent_handler))
         .route("/api/overview", get(overview_handler))
+        .route("/api/account/status", get(account_status_handler))
         .route("/api/doc/list", get(list_docs_handler))
         .route("/api/shared", get(list_shared_handler))
+        .route("/api/activity/shared", get(list_shared_activity_handler))
         .route("/api/doc/:id/events", get(list_doc_events_handler))
         .route("/api/doc/:id/evidence", get(export_doc_evidence_handler))
         .route("/api/doc/:id/evidence/anchor", post(anchor_evidence_bundle_handler))
@@ -285,7 +287,127 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    sqlx::query(
+        r#"
+        create table if not exists account_subscriptions (
+            wallet text primary key,
+            billing_status text not null default 'trialing',
+            trial_started_at timestamptz not null default now(),
+            trial_ends_at timestamptz not null default (now() + interval '30 days'),
+            paid_through timestamptz null,
+            stripe_customer_id text null,
+            stripe_subscription_id text null,
+            plan_amount_usd integer not null default 8,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
     Ok(())
+}
+
+fn billing_trial_days() -> i64 {
+    std::env::var("BILLING_TRIAL_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(30)
+}
+
+fn billing_plan_amount_usd() -> i32 {
+    std::env::var("BILLING_PLAN_USD")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
+}
+
+fn billing_enforced() -> bool {
+    std::env::var("BILLING_ENFORCEMENT")
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+async fn ensure_account_subscription_record(db: &PgPool, wallet: &str) -> Result<(), AppError> {
+    let trial_days = billing_trial_days();
+    let plan_amount = billing_plan_amount_usd();
+    sqlx::query(
+        r#"
+        insert into account_subscriptions (
+            wallet,
+            billing_status,
+            trial_started_at,
+            trial_ends_at,
+            plan_amount_usd,
+            created_at,
+            updated_at
+        )
+        values ($1, 'trialing', now(), now() + make_interval(days => $2::int), $3, now(), now())
+        on conflict (wallet) do nothing
+        "#,
+    )
+    .bind(wallet)
+    .bind(trial_days as i32)
+    .bind(plan_amount)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
+}
+
+async fn account_status_value(db: &PgPool, wallet: &str) -> Result<serde_json::Value, AppError> {
+    ensure_account_subscription_record(db, wallet).await?;
+
+    let row = sqlx::query(
+        r#"
+        select
+            wallet,
+            billing_status,
+            trial_started_at,
+            trial_ends_at,
+            paid_through,
+            stripe_customer_id,
+            stripe_subscription_id,
+            plan_amount_usd,
+            created_at,
+            updated_at
+        from account_subscriptions
+        where wallet = $1
+        "#,
+    )
+    .bind(wallet)
+    .fetch_one(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let trial_ends_at: chrono::DateTime<chrono::Utc> = row.get("trial_ends_at");
+    let paid_through: Option<chrono::DateTime<chrono::Utc>> = row.get("paid_through");
+    let now = chrono::Utc::now();
+    let billing_status: String = row.get("billing_status");
+    let in_trial = billing_status == "trialing" && trial_ends_at > now;
+    let subscription_active = matches!(billing_status.as_str(), "active" | "paid")
+        && paid_through.map(|value| value > now).unwrap_or(true);
+    let write_access = in_trial || subscription_active || !billing_enforced();
+
+    Ok(json!({
+        "wallet": row.get::<String,_>("wallet"),
+        "billing_status": billing_status,
+        "trial_started_at": row.get::<chrono::DateTime<chrono::Utc>,_>("trial_started_at"),
+        "trial_ends_at": trial_ends_at,
+        "paid_through": paid_through,
+        "stripe_customer_id": row.get::<Option<String>,_>("stripe_customer_id"),
+        "stripe_subscription_id": row.get::<Option<String>,_>("stripe_subscription_id"),
+        "plan_amount_usd": row.get::<i32,_>("plan_amount_usd"),
+        "billing_enforced": billing_enforced(),
+        "in_trial": in_trial,
+        "subscription_active": subscription_active,
+        "write_access": write_access,
+        "created_at": row.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+        "updated_at": row.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")
+    }))
 }
 
 fn build_share_event_payload(
@@ -1111,6 +1233,7 @@ async fn list_shared_handler(
             s.recipient_email,
             s.recipient_phone,
             s.status,
+            s.delivery_json,
             s.created_at,
             d.label,
             d.hash_hex,
@@ -1139,10 +1262,87 @@ async fn list_shared_handler(
                     "recipient_email": r.get::<Option<String>,_>("recipient_email"),
                     "recipient_phone": r.get::<Option<String>,_>("recipient_phone"),
                     "status": r.get::<String,_>("status"),
+                    "delivery_json": r.get::<serde_json::Value,_>("delivery_json"),
                     "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
                     "label": r.get::<Option<String>,_>("label"),
                     "hash_hex": r.get::<String,_>("hash_hex"),
                     "version": r.get::<i32,_>("version")
+                })
+            })
+            .collect(),
+    ))
+}
+
+async fn list_shared_activity_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = normalize_wallet_for_chain(
+        &session.wallet,
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
+    );
+    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+
+    let rows = sqlx::query(
+        r#"
+        select
+            e.id,
+            e.doc_id,
+            e.event_type,
+            e.actor_wallet,
+            e.payload,
+            e.created_at,
+            d.label,
+            d.owner_wallet,
+            d.version
+        from document_events e
+        join documents d on d.id = e.doc_id
+        where d.is_deleted = false
+          and (
+            d.owner_wallet = $1
+            or exists (
+              select 1
+              from document_shares s
+              where s.doc_id = d.id
+                and s.recipient_wallet is not null
+                and s.status not in ('dismissed')
+                and (
+                  (coalesce(s.recipient_chain, '') = 'evm' and $2 = 'evm' and lower(s.recipient_wallet) = lower($1))
+                  or
+                  (coalesce(s.recipient_chain, '') = 'sol' and $2 = 'sol' and s.recipient_wallet = $1)
+                  or
+                  (s.recipient_chain is null and (
+                    ($1 like '0x%' and lower(s.recipient_wallet) = lower($1))
+                    or
+                    ($1 not like '0x%' and s.recipient_wallet = $1)
+                  ))
+                )
+            )
+          )
+        order by e.created_at desc
+        limit 120
+        "#,
+    )
+    .bind(&wallet)
+    .bind(chain)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| {
+                json!({
+                    "id": row.get::<uuid::Uuid,_>("id"),
+                    "doc_id": row.get::<uuid::Uuid,_>("doc_id"),
+                    "event_type": row.get::<String,_>("event_type"),
+                    "actor_wallet": row.get::<String,_>("actor_wallet"),
+                    "payload": row.get::<serde_json::Value,_>("payload"),
+                    "created_at": row.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
+                    "label": row.get::<Option<String>,_>("label"),
+                    "owner_wallet": row.get::<String,_>("owner_wallet"),
+                    "version": row.get::<i32,_>("version")
                 })
             })
             .collect(),
@@ -1267,6 +1467,18 @@ async fn overview_handler(
             "label": row.get::<Option<String>,_>("label")
         })).collect::<Vec<_>>()
     })))
+}
+
+async fn account_status_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = normalize_wallet_for_chain(
+        &session.wallet,
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
+    );
+    Ok(Json(account_status_value(&st.db, &wallet).await?))
 }
 
 // ================================================================
@@ -2119,6 +2331,7 @@ async fn review_doc_handler(
     Ok(Json(json!({
         "url": internal_blob_url(id),
         "blob_url": internal_blob_url(id),
+        "owner_wallet": doc.owner_wallet,
         "label": doc.label,
         "hash_hex": doc.hash_hex,
         "version": doc.version,

@@ -9,6 +9,11 @@
   --accent: #d2475d;
   --accent-strong: #406fdd;
   --danger: #ff6b7f;
+  --sender: #7d1f2f;
+  --sender-border: rgba(183, 61, 83, 0.45);
+  --recipient: #143d2c;
+  --recipient-border: rgba(56, 154, 98, 0.42);
+  --important: #f4d2a1;
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
 }
 
@@ -481,6 +486,55 @@ progress {
 
 .compact-card {
   padding: 16px;
+}
+
+.event-card.sender-event {
+  border-color: var(--sender-border);
+  background: linear-gradient(180deg, rgba(58, 11, 21, 0.78), rgba(18, 8, 14, 0.9));
+}
+
+.event-card.recipient-event {
+  border-color: var(--recipient-border);
+  background: linear-gradient(180deg, rgba(12, 46, 31, 0.8), rgba(8, 20, 14, 0.9));
+}
+
+.event-card.neutral-event {
+  border-color: rgba(137, 155, 211, 0.22);
+}
+
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.role-badge.sender-role {
+  background: rgba(125, 31, 47, 0.88);
+  border-color: var(--sender-border);
+  color: #ffd6dd;
+}
+
+.role-badge.recipient-role {
+  background: rgba(20, 61, 44, 0.92);
+  border-color: var(--recipient-border);
+  color: #d8f7e7;
+}
+
+.role-badge.neutral-role {
+  background: rgba(14, 24, 48, 0.84);
+  color: var(--muted);
+}
+
+.important-value {
+  color: var(--important);
+  font-weight: 600;
 }
 
 .modal-shell {

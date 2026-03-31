@@ -106,14 +106,17 @@ Current state includes:
 - Document version creation
 - Evidence export
 - Inbox and share records
+- Shared activity feed and sender/recipient audit coloring
+- Wallet-to-wallet sharing across EVM and Solana
+- Last-signed visibility on document cards and details
+- Billing status scaffolding with 30-day trial metadata
 - Optional Arweave anchoring
 - Policy and agent API groundwork
 
 Still in progress:
 
 - Browser-side PQ crypto generation/signing
-- Real provider-backed outbound delivery setup
-- Public deployment and production billing
+- Full production billing enforcement and checkout
 - Office-class collaborative editing
 
 ## 🗺️ Roadmap
@@ -123,7 +126,7 @@ Still in progress:
 - Wallet-to-wallet delivery flows
 - Human and AI agent policy routing
 - Evidence bundle anchoring
-- Subscription billing
+- Subscription billing checkout and enforcement
 - Production deployment
 
 ## 🧬 Why This Exists
@@ -200,6 +203,8 @@ Use `.env.example` as the environment template for:
 - PUBLIC_APP_URL
 - Resend
 - Twilio
+- Billing trial / plan settings
+- Stripe keys for future paid checkout
 - Arweave / Bundlr-style anchoring
 
 ## CLI Examples

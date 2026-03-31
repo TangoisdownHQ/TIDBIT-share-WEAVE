@@ -26,6 +26,8 @@
       <button id="homeTabBtn" class="button-primary" type="button">Home</button>
       <button id="docsTabBtn" type="button">Inbox / Documents</button>
       <button id="sharedTabBtn" type="button">Shared</button>
+      <button id="activityTabBtn" type="button">Shared Activity</button>
+      <button id="billingTabBtn" type="button">Billing</button>
     </section>
 
     <div id="homeTabPanel">
@@ -93,6 +95,32 @@
           <button id="sharedBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
         </div>
         <div id="sharedList" class="inbox-list">Loading shared files…</div>
+      </div>
+    </div>
+
+    <div id="activityTabPanel" class="hidden">
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Shared Activity</h3>
+            <p class="muted">All sender and recipient actions across files you own or files shared with you.</p>
+          </div>
+          <button id="activityBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
+        </div>
+        <div id="sharedActivityList" class="inbox-list">Loading shared activity…</div>
+      </div>
+    </div>
+
+    <div id="billingTabPanel" class="hidden">
+      <div class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Billing</h3>
+            <p class="muted">Trial and subscription status for the active wallet workspace.</p>
+          </div>
+          <button id="billingBackHomeBtn" class="button-secondary" type="button">Back to Home</button>
+        </div>
+        <div id="billingStatus" class="session-card">Loading billing status…</div>
       </div>
     </div>
   </div>

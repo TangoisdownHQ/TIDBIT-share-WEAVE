@@ -407,20 +407,30 @@ function switchDashboardTab(tabName) {
   const homePanel = document.getElementById("homeTabPanel");
   const docsPanel = document.getElementById("docsTabPanel");
   const sharedPanel = document.getElementById("sharedTabPanel");
+  const activityPanel = document.getElementById("activityTabPanel");
+  const billingPanel = document.getElementById("billingTabPanel");
   const homeBtn = document.getElementById("homeTabBtn");
   const docsBtn = document.getElementById("docsTabBtn");
   const sharedBtn = document.getElementById("sharedTabBtn");
-  if (!homePanel || !docsPanel || !sharedPanel || !homeBtn || !docsBtn || !sharedBtn) return;
+  const activityBtn = document.getElementById("activityTabBtn");
+  const billingBtn = document.getElementById("billingTabBtn");
+  if (!homePanel || !docsPanel || !sharedPanel || !activityPanel || !billingPanel || !homeBtn || !docsBtn || !sharedBtn || !activityBtn || !billingBtn) return;
 
   const showHome = tabName === "home";
   const showDocs = tabName === "docs";
   const showShared = tabName === "shared";
+  const showActivity = tabName === "activity";
+  const showBilling = tabName === "billing";
   homePanel.classList.toggle("hidden", !showHome);
   docsPanel.classList.toggle("hidden", !showDocs);
   sharedPanel.classList.toggle("hidden", !showShared);
+  activityPanel.classList.toggle("hidden", !showActivity);
+  billingPanel.classList.toggle("hidden", !showBilling);
   homeBtn.classList.toggle("button-primary", showHome);
   docsBtn.classList.toggle("button-primary", showDocs);
   sharedBtn.classList.toggle("button-primary", showShared);
+  activityBtn.classList.toggle("button-primary", showActivity);
+  billingBtn.classList.toggle("button-primary", showBilling);
 }
 
 // ================== UPLOAD ==================
@@ -571,6 +581,7 @@ async function afterDocumentSigned(docId) {
   if (document.getElementById("docList")) await loadDocuments();
   if (document.getElementById("inboxList")) await loadInbox();
   if (document.getElementById("sharedList")) await loadSharedFiles();
+  if (document.getElementById("sharedActivityList")) await loadSharedActivity();
   if (document.getElementById("reviewPreview")) await loadReviewPage();
   if (document.getElementById("detailMeta")) await loadDocumentDetailsPage();
 }
@@ -638,6 +649,8 @@ async function loadSharedFiles() {
         <div class="doc-meta">Recipient: ${item.recipient_name || item.recipient_email || item.recipient_phone || item.recipient_wallet || "unknown"}</div>
         <div class="doc-meta">Network: ${item.recipient_chain || "n/a"}</div>
         <div class="doc-meta">Status: ${item.status}</div>
+        <div class="doc-meta">Wallet route: ${item.recipient_wallet ? "yes" : "no"}</div>
+        <div class="doc-meta">Delivery: ${Array.isArray(item.delivery_json) && item.delivery_json.length ? item.delivery_json.map((entry) => `${entry.channel}:${entry.status}`).join(", ") : "no provider delivery recorded"}</div>
         <div class="doc-meta">Version: v${item.version}</div>
         <div class="doc-meta">Created: ${new Date(item.created_at).toLocaleString()}</div>
         <div class="doc-actions">
@@ -648,6 +661,41 @@ async function loadSharedFiles() {
     });
   } catch (err) {
     box.innerHTML = `<div class='inbox-card'><strong>Shared files unavailable.</strong><div class='doc-meta'>${err.message}</div></div>`;
+  }
+}
+
+async function loadSharedActivity() {
+  const box = document.getElementById("sharedActivityList");
+  if (!box) return;
+  try {
+    const items = await apiGet("/api/activity/shared");
+    box.innerHTML = items.length
+      ? renderHistoryCards(items, { currentWallet, aggregate: true })
+      : "<div class='event-card neutral-event'><strong>No shared activity yet.</strong><div class='event-meta'>Actions across shared files will appear here.</div></div>";
+  } catch (err) {
+    box.innerHTML = `<div class='event-card neutral-event'><strong>Shared activity unavailable.</strong><div class='event-meta'>${err.message}</div></div>`;
+  }
+}
+
+async function loadBillingStatus() {
+  const box = document.getElementById("billingStatus");
+  if (!box) return;
+  try {
+    const status = await apiGet("/api/account/status");
+    box.innerHTML = `
+      <div class="doc-meta">Wallet: <span class="important-value">${escapeHtml(status.wallet)}</span></div>
+      <div class="doc-meta">Status: <span class="important-value">${escapeHtml(status.billing_status)}</span></div>
+      <div class="doc-meta">Trial ends: <span class="important-value">${status.trial_ends_at ? new Date(status.trial_ends_at).toLocaleString() : "n/a"}</span></div>
+      <div class="doc-meta">Plan: <span class="important-value">$${escapeHtml(String(status.plan_amount_usd))}/month</span></div>
+      <div class="doc-meta">Subscription active: <span class="important-value">${status.subscription_active ? "yes" : "no"}</span></div>
+      <div class="doc-meta">Write access: <span class="important-value">${status.write_access ? "enabled" : "blocked"}</span></div>
+      <div class="doc-meta">Billing enforcement: <span class="important-value">${status.billing_enforced ? "enabled" : "disabled"}</span></div>
+      <div class="doc-meta">Stripe customer: ${escapeHtml(status.stripe_customer_id || "not linked yet")}</div>
+      <div class="doc-meta">Stripe subscription: ${escapeHtml(status.stripe_subscription_id || "not linked yet")}</div>
+      <div class="doc-meta">Paid through: ${status.paid_through ? new Date(status.paid_through).toLocaleString() : "not set"}</div>
+    `;
+  } catch (err) {
+    box.innerHTML = `<div class="event-card neutral-event"><strong>Billing unavailable.</strong><div class="event-meta">${err.message}</div></div>`;
   }
 }
 
@@ -905,6 +953,8 @@ async function refreshDashboardData() {
   if (document.getElementById("docList")) await loadDocuments();
   if (document.getElementById("inboxList")) await loadInbox();
   if (document.getElementById("sharedList")) await loadSharedFiles();
+  if (document.getElementById("sharedActivityList")) await loadSharedActivity();
+  if (document.getElementById("billingStatus")) await loadBillingStatus();
 }
 
 async function reviewInboxDocument(item) {
@@ -959,24 +1009,69 @@ function selectFieldTool(kind) {
   });
 }
 
-function renderHistoryCards(events) {
+function classifyEventActor(event, context = {}) {
+  const actorWallet = String(event.actor_wallet || event?.payload?.actor?.wallet || "");
+  const ownerWallet = String(context.ownerWallet || event.owner_wallet || "");
+  const activeWallet = String(context.currentWallet || currentWallet || "");
+
+  if (ownerWallet && actorWallet && actorWallet.toLowerCase() === ownerWallet.toLowerCase()) {
+    return {
+      role: "sender",
+      label: activeWallet && actorWallet.toLowerCase() === activeWallet.toLowerCase() ? "Sender · You" : "Sender",
+    };
+  }
+  if (activeWallet && actorWallet && actorWallet.toLowerCase() === activeWallet.toLowerCase()) {
+    return { role: "recipient", label: "Recipient · You" };
+  }
+  if (actorWallet.startsWith("guest-envelope:")) {
+    return { role: "neutral", label: "Guest Envelope" };
+  }
+  return { role: "recipient", label: "Recipient" };
+}
+
+function renderImportantMeta(event) {
+  const parts = [];
+  if (event.label) {
+    parts.push(`<div class="event-meta">Document: <span class="important-value">${escapeHtml(event.label)}</span></div>`);
+  }
+  const version = event.version || event?.payload?.version;
+  if (version) {
+    parts.push(`<div class="event-meta">Version: <span class="important-value">v${escapeHtml(String(version))}</span></div>`);
+  }
+  const signatureType = event?.payload?.verification?.signature_type || event?.payload?.completion_signature_type;
+  if (signatureType) {
+    parts.push(`<div class="event-meta">Signature: <span class="important-value">${escapeHtml(signatureType)}</span></div>`);
+  }
+  const chain = event?.payload?.actor_chain || event?.payload?.verification?.chain || event?.payload?.actor?.chain;
+  if (chain) {
+    parts.push(`<div class="event-meta">Chain: <span class="important-value">${escapeHtml(chain)}</span></div>`);
+  }
+  return parts.join("");
+}
+
+function renderHistoryCards(events, context = {}) {
   if (!events.length) {
     return "<div class='event-card'><strong>No custody events yet.</strong><div class='event-meta'>Review, share, download, and signature activity will appear here.</div></div>";
   }
 
   return events
     .map(
-      (event) => `
-        <article class="event-card">
+      (event) => {
+        const actor = classifyEventActor(event, context);
+        return `
+        <article class="event-card ${actor.role}-event">
           <div class="event-top">
             <strong>${event.event_type}</strong>
             <span class="muted">${new Date(event.created_at).toLocaleString()}</span>
           </div>
+          <div class="event-meta"><span class="role-badge ${actor.role}-role">${actor.label}</span></div>
           <div class="event-meta">Actor: ${event.actor_wallet || "system"}</div>
           <div class="event-meta">Event ID: ${event.id}</div>
+          ${renderImportantMeta(event)}
           <pre>${JSON.stringify(event.payload || {}, null, 2)}</pre>
         </article>
       `
+      }
     )
     .join("");
 }
@@ -1235,6 +1330,7 @@ async function loadReviewPage() {
       mime_type: review.mime_type,
       parent_id: review.parent_id,
       arweave_tx: review.arweave_tx,
+      owner_wallet: review.owner_wallet,
     };
 
     document.getElementById("reviewTitle").textContent = review.label || "Document Review";
@@ -1249,13 +1345,14 @@ async function loadReviewPage() {
       <div class="doc-meta">Version: v${review.version}</div>
       <div class="doc-meta">Type: ${review.mime_type || "application/octet-stream"}</div>
       <div class="doc-meta">Parent: ${review.parent_id || "root document"}</div>
+      <div class="doc-meta">Owner: ${review.owner_wallet || "unknown"}</div>
       <div class="doc-meta">Arweave: ${review.arweave_tx || "not anchored"}</div>
       <div class="doc-meta">Integrity: ${verified ? "verified" : "mismatch detected"}</div>
     `;
 
     previewRoot.innerHTML = "";
     previewRoot.appendChild(renderPreviewNode(blob, review.mime_type || "application/octet-stream"));
-    eventsRoot.innerHTML = renderHistoryCards(events);
+    eventsRoot.innerHTML = renderHistoryCards(events, { currentWallet, ownerWallet: review.owner_wallet });
 
     const signBtn = document.getElementById("reviewSignBtn");
     const downloadBtn = document.getElementById("reviewDownloadBtn");
@@ -1302,6 +1399,7 @@ async function loadDocumentDetailsPage() {
     mime_type: review.mime_type || evidence.document?.mime_type,
     parent_id: review.parent_id || evidence.document?.parent_id,
     arweave_tx: review.arweave_tx || evidence.document?.arweave_tx,
+    owner_wallet: review.owner_wallet || evidence.document?.owner_wallet,
   };
   selectedVersionParent = currentDocumentDetails;
 
@@ -1325,7 +1423,10 @@ async function loadDocumentDetailsPage() {
   previewRoot.appendChild(renderPreviewNode(blob, currentDocumentDetails.mime_type || "application/octet-stream"));
   lineageRoot.innerHTML = renderLineageCards(evidence.lineage || []);
   sharesRoot.innerHTML = renderShareCards(evidence.shares || []);
-  historyRoot.innerHTML = renderHistoryCards(evidence.events || []);
+  historyRoot.innerHTML = renderHistoryCards([...(evidence.events || [])].reverse(), {
+    currentWallet,
+    ownerWallet: currentDocumentDetails.owner_wallet,
+  });
 
   prepareVersion(currentDocumentDetails);
   document.getElementById("detailReviewBtn").onclick = () => openReview(id);
@@ -1573,12 +1674,18 @@ document.addEventListener("DOMContentLoaded", () => {
     loadDocuments();
     loadInbox();
     loadSharedFiles();
+    loadSharedActivity();
+    loadBillingStatus();
     document.getElementById("homeTabBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("docsTabBtn")?.addEventListener("click", () => switchDashboardTab("docs"));
     document.getElementById("sharedTabBtn")?.addEventListener("click", () => switchDashboardTab("shared"));
+    document.getElementById("activityTabBtn")?.addEventListener("click", () => switchDashboardTab("activity"));
+    document.getElementById("billingTabBtn")?.addEventListener("click", () => switchDashboardTab("billing"));
     document.getElementById("docsBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("inboxBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("sharedBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
+    document.getElementById("activityBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
+    document.getElementById("billingBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     switchDashboardTab("home");
     document.getElementById("uploadBtn").onclick = uploadDoc;
     document.getElementById("shareBtn").onclick = shareSelectedDocument;
