@@ -1211,15 +1211,19 @@ function ensurePreviewModal() {
   modal.id = "previewModal";
   modal.className = "modal-shell hidden preview-modal-shell";
   modal.setAttribute("aria-hidden", "true");
-  modal.innerHTML = `
-    <div class="modal-panel preview-modal-panel">
-      <div class="section-head">
-        <h3 id="previewModalTitle">Large preview</h3>
-        <button type="button" id="closePreviewModal" class="button-secondary">Close</button>
-      </div>
-      <div id="previewModalBody" class="preview-modal-body"></div>
-    </div>
-  `;
+  const panel = createElement("div", { className: "modal-panel preview-modal-panel" });
+  const head = createElement("div", { className: "section-head" });
+  const title = createElement("h3", { id: "previewModalTitle", text: "Large preview" });
+  const close = createElement("button", {
+    id: "closePreviewModal",
+    className: "button-secondary",
+    text: "Close",
+    type: "button",
+  });
+  const body = createElement("div", { id: "previewModalBody", className: "preview-modal-body" });
+  head.append(title, close);
+  panel.append(head, body);
+  modal.appendChild(panel);
   document.body.appendChild(modal);
   document.getElementById("closePreviewModal").onclick = hidePreviewModal;
   return modal;
@@ -1229,8 +1233,7 @@ function showPreviewModal(title, blob, mimeType, annotationFields = []) {
   const modal = ensurePreviewModal();
   document.getElementById("previewModalTitle").textContent = title || "Large preview";
   const body = document.getElementById("previewModalBody");
-  body.innerHTML = "";
-  body.appendChild(renderPreviewNode(blob, mimeType, { annotationFields }));
+  body.replaceChildren(renderPreviewNode(blob, mimeType, { annotationFields }));
   modal.classList.remove("hidden");
   modal.setAttribute("aria-hidden", "false");
 }
@@ -1258,8 +1261,7 @@ function createFieldBadge(field) {
 }
 
 function renderAnnotationOverlay(overlay, fields, interactive) {
-  overlay.innerHTML = "";
-  (fields || []).forEach((field) => overlay.appendChild(createFieldBadge(field)));
+  overlay.replaceChildren(...(fields || []).map((field) => createFieldBadge(field)));
   overlay.classList.toggle("interactive-overlay", Boolean(interactive));
 }
 
