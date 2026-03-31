@@ -32,7 +32,7 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::error::AppError;
 use crate::identity_web::evm::{verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
@@ -158,8 +158,16 @@ async fn start_server() -> anyhow::Result<()> {
     };
 
     let static_files = ServeDir::new("web").append_index_html_on_directories(true);
+    let landing_page = ServeFile::new("web/landing.html");
+    let login_page = ServeFile::new("web/index.html");
+    let pricing_page = ServeFile::new("web/pricing.html");
 
     let app = Router::new()
+        .route_service("/", landing_page)
+        .route_service("/app", login_page.clone())
+        .route_service("/app/", login_page)
+        .route_service("/pricing", pricing_page.clone())
+        .route_service("/pricing/", pricing_page)
         .route("/health", get(health_handler))
         .route("/api/identity/evm/nonce", post(evm_nonce_handler_app))
         .route("/api/identity/evm/verify", post(evm_verify_handler_app))
