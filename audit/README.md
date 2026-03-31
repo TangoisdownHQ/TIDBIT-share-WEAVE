@@ -63,3 +63,12 @@ If you are reviewing the project, ask these questions:
 5. Are there any suppressed findings, or were the findings actually mitigated?
 
 For the current state of this repo, the answer to the last question is important: the findings were actually mitigated.
+
+## CI Relationship
+
+The audit work in this folder is now backed by GitHub workflows:
+
+- SecureCI for repository scanning and alert publication
+- `Validate` for repo-owned `cargo check`, `cargo audit`, and frontend syntax validation
+
+That means the audit story is no longer just a manual note. It now has recurring CI enforcement behind it.

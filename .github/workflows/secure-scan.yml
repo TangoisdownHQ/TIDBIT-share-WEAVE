@@ -20,5 +20,5 @@ jobs:
     uses: TangoisdownHQ/TID-SecureCI/.github/workflows/tid-secureci.yml@master
     secrets: inherit
     with:
-      enforce: false
+      enforce: true
       fail_severity: HIGH,CRITICAL

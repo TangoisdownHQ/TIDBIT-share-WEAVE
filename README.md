@@ -150,6 +150,26 @@ Recent dependency hardening work included:
 
 See the [Audit Folder](./audit/README.md) for the detailed history and current state.
 
+## 🛡️ CI And Security Scanning
+
+The repo now has two separate GitHub Actions security layers:
+
+- `Secure Scan`
+  Uses the external SecureCI workflow and publishes security alerts for the repository.
+- `Validate`
+  Runs repo-owned checks:
+  - `cargo check`
+  - `cargo audit`
+  - `node --check backend-rs/web/app.js`
+
+Recommended GitHub settings:
+
+1. Require both `Secure Scan / secureci` and `Validate` in branch protection for `main`.
+2. Keep direct pushes to `main` restricted once the workflow history is stable.
+3. Review new security alerts before suppressing anything.
+
+Branch protection itself must still be enabled in GitHub repository settings. It is not controlled by files in this repo.
+
 ## 🧬 Why This Exists
 
 TIDBIT-share-WEAVE is built for a future where:

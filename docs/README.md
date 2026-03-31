@@ -72,6 +72,15 @@ As of the current March 2026 audit pass:
 
 The audit details and remediation path are documented in the [Audit Folder](../audit/README.md).
 
+## CI Position
+
+The repo now uses:
+
+- SecureCI for repository security scanning and alert publication
+- a repo-owned validation workflow for Rust and frontend syntax checks
+
+For production discipline, these workflows should be required in GitHub branch protection.
+
 ## Recommended Reading Order
 
 1. Read the [User Guide](./user-guide.md) to understand the product from the user side.
