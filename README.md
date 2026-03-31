@@ -134,7 +134,7 @@ Still in progress:
 
 - End-to-end browser-side PQ encryption/signing
 - Provider-backed email and SMS delivery
-- Wallet-to-wallet delivery flows
+- Wallet-native recipient notification and acceptance flows
 - Human and AI agent policy routing
 - Evidence bundle anchoring
 - Subscription billing checkout and enforcement
