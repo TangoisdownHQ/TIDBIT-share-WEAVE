@@ -479,8 +479,24 @@ function createAgentCard(agent) {
   card.appendChild(createMetaLine("Model", agent.model || "not specified"));
   card.appendChild(createMetaLine("Status", agent.is_active ? "active" : "inactive", { important: true }));
   card.appendChild(createMetaLine("Agent ID", agent.id));
-  card.appendChild(createMetaLine("Capabilities", normalizeCapabilityList(agent.capabilities).join(", ") || "none listed"));
+  const capabilityWrap = createElement("div", { className: "capability-badges" });
+  const capabilities = normalizeCapabilityList(agent.capabilities);
+  if (capabilities.length) {
+    capabilities.forEach((capability) => {
+      capabilityWrap.appendChild(createElement("span", { className: "capability-chip", text: capability }));
+    });
+  } else {
+    capabilityWrap.appendChild(createElement("span", { className: "capability-chip", text: "no capabilities listed" }));
+  }
+  card.appendChild(capabilityWrap);
   card.appendChild(createMetaLine("Created", new Date(agent.created_at).toLocaleString()));
+  const actions = createElement("div", { className: "doc-actions" });
+  const rotate = createElement("button", { text: "Rotate token" });
+  const revoke = createElement("button", { className: "button-danger", text: "Revoke" });
+  rotate.onclick = () => rotateAgentToken(agent).catch((err) => alert(err.message));
+  revoke.onclick = () => revokeAgent(agent).catch((err) => alert(err.message));
+  actions.append(rotate, revoke);
+  card.appendChild(actions);
   return card;
 }
 
@@ -515,9 +531,54 @@ function createImportantMetaNodes(event) {
   return nodes;
 }
 
+function friendlyEventLabel(eventType) {
+  const labels = {
+    AGENT_REVIEW: "Agent Review",
+    AGENT_SIGN: "Agent Sign",
+    AGENT_SIGN_PROPOSED: "Agent Sign Proposed",
+    AGENT_VERSION_CREATED: "Agent Version Created",
+    POLICY_UPDATED: "Policy Updated",
+  };
+  return labels[eventType] || eventType;
+}
+
 async function copyText(value, successMessage) {
   await navigator.clipboard.writeText(value);
   if (successMessage) alert(successMessage);
+}
+
+async function rotateAgentToken(agent) {
+  const result = await apiPost(`/api/agent/${encodeURIComponent(agent.id)}/rotate-token`, {});
+  await copyText(result.token, "New agent token copied.");
+  const resultBox = document.getElementById("agentRegisterResult");
+  if (resultBox) {
+    resultBox.textContent = JSON.stringify(
+      {
+        ok: result.ok,
+        agent_id: result.agent_id,
+        label: result.label,
+        provider: result.provider,
+        model: result.model,
+        capabilities: result.capabilities,
+        token: result.token,
+        note: "Previous token is no longer valid.",
+      },
+      null,
+      2
+    );
+  }
+  await loadAgents();
+}
+
+async function revokeAgent(agent) {
+  if (!window.confirm(`Revoke ${agent.label || "this agent"}? Its token will stop working.`)) return;
+  const result = await apiPost(`/api/agent/${encodeURIComponent(agent.id)}/revoke`, {});
+  const resultBox = document.getElementById("agentRegisterResult");
+  if (resultBox) {
+    resultBox.textContent = JSON.stringify(result, null, 2);
+  }
+  await loadAgents();
+  await loadAgentActivity();
 }
 
 // ================== DASHBOARD ==================
@@ -1043,6 +1104,20 @@ async function loadAgentActivity() {
   }
 }
 
+async function exportAgentActivity() {
+  const items = await apiGet("/api/activity/shared");
+  const agentItems = items.filter((event) => {
+    const actorKind = event?.payload?.actor?.kind;
+    const actorChain = event?.payload?.actor_chain;
+    return actorKind === "agent" || actorChain === "agent-api" || String(event.actor_wallet || "").startsWith("agent:");
+  });
+  downloadJsonFile("tidbit-agent-activity.json", {
+    exported_at: new Date().toISOString(),
+    owner_wallet: currentWallet,
+    events: agentItems,
+  });
+}
+
 async function registerAgent() {
   const label = document.getElementById("agentLabel")?.value.trim();
   const provider = document.getElementById("agentProvider")?.value.trim();
@@ -1434,7 +1509,7 @@ function renderHistoryCards(events, context = {}) {
     const actor = classifyEventActor(event, context);
     const article = createElement("article", { className: `event-card ${actor.role}-event` });
     const top = createElement("div", { className: "event-top" });
-    top.appendChild(createElement("strong", { text: event.event_type }));
+    top.appendChild(createElement("strong", { text: friendlyEventLabel(event.event_type) }));
     top.appendChild(createElement("span", { className: "muted", text: new Date(event.created_at).toLocaleString() }));
     article.appendChild(top);
 
@@ -2077,6 +2152,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("saveAgentPolicyBtn")?.addEventListener("click", () => saveAgentPolicy().catch((err) => alert(err.message)));
     document.getElementById("applySwarmTemplateBtn")?.addEventListener("click", applySwarmTemplate);
     document.getElementById("refreshAgentActivityBtn")?.addEventListener("click", () => loadAgentActivity().catch((err) => alert(err.message)));
+    document.getElementById("exportAgentActivityBtn")?.addEventListener("click", () => exportAgentActivity().catch((err) => alert(err.message)));
     switchDashboardTab("home");
     document.getElementById("uploadBtn").onclick = uploadDoc;
     document.getElementById("shareBtn").onclick = shareSelectedDocument;

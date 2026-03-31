@@ -626,6 +626,26 @@ progress {
   background: rgba(10, 21, 43, 0.8);
 }
 
+.capability-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+
+.capability-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(137, 155, 211, 0.22);
+  background: rgba(14, 24, 48, 0.86);
+  color: var(--important);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 .stat-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }

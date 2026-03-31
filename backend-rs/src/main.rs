@@ -179,6 +179,8 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/public/envelope/:token/sign", post(public_envelope_sign_handler))
         .route("/api/agent/register", post(register_agent_handler))
         .route("/api/agent/list", get(list_agents_handler))
+        .route("/api/agent/:id/rotate-token", post(rotate_agent_token_handler))
+        .route("/api/agent/:id/revoke", post(revoke_agent_handler))
         .route("/api/overview", get(overview_handler))
         .route("/api/account/status", get(account_status_handler))
         .route("/api/doc/list", get(list_docs_handler))
@@ -1912,6 +1914,83 @@ async fn list_agents_handler(
             })
             .collect(),
     ))
+}
+
+async fn rotate_agent_token_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = session.wallet.clone();
+    let token = format!("agt_{}", uuid::Uuid::new_v4().simple());
+    let token_hash = token_hash_hex(&token);
+
+    let row = sqlx::query(
+        r#"
+        update agent_identities
+        set api_token_hash = $3, updated_at = now()
+        where id = $1
+          and owner_wallet = $2
+          and is_active = true
+        returning label, provider, model, capabilities_json
+        "#,
+    )
+    .bind(id)
+    .bind(&wallet)
+    .bind(&token_hash)
+    .fetch_optional(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let Some(row) = row else {
+        return Err(AppError::NotFound("Agent not found".into()));
+    };
+
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": id,
+        "label": row.get::<String,_>("label"),
+        "provider": row.get::<Option<String>,_>("provider"),
+        "model": row.get::<Option<String>,_>("model"),
+        "capabilities": row.get::<serde_json::Value,_>("capabilities_json"),
+        "token": token
+    })))
+}
+
+async fn revoke_agent_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_session_from_headers(&st, &headers)?;
+    let wallet = session.wallet.clone();
+
+    let row = sqlx::query(
+        r#"
+        update agent_identities
+        set is_active = false, updated_at = now()
+        where id = $1
+          and owner_wallet = $2
+        returning label
+        "#,
+    )
+    .bind(id)
+    .bind(&wallet)
+    .fetch_optional(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let Some(row) = row else {
+        return Err(AppError::NotFound("Agent not found".into()));
+    };
+
+    Ok(Json(json!({
+        "ok": true,
+        "agent_id": id,
+        "label": row.get::<String,_>("label"),
+        "revoked": true
+    })))
 }
 
 async fn agent_review_doc_handler(
