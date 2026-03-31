@@ -12,6 +12,7 @@
             <a class="marketing-brand" href="/">TIDBIT-share-WEAVE</a>
             <div class="marketing-nav-actions">
                 <a class="button-link" href="#intro">Intro</a>
+                <a class="button-link" href="#post-quantum">Post-Quantum</a>
                 <a class="button-link" href="#agents">AI Agents</a>
                 <a class="button-link" href="#docs">Docs</a>
                 <a class="button-link" href="/pricing">Pricing</a>
@@ -32,6 +33,7 @@
                 <div class="marketing-badges">
                     <span>Wallet-native identity</span>
                     <span>Shared custody ledger</span>
+                    <span>Post-quantum aligned</span>
                     <span>AI-agent ready</span>
                     <span>Version lineage</span>
                 </div>
@@ -76,6 +78,55 @@
                         Keep timestamps, actors, signatures, versions, share routes, and evidence together in one custody ledger.
                     </p>
                 </div>
+            </div>
+        </section>
+
+        <section id="post-quantum" class="panel marketing-section">
+            <div class="section-head">
+                <h2>How Post-Quantum Protection Works</h2>
+            </div>
+            <div class="marketing-columns">
+                <div>
+                    <h3>What is already live</h3>
+                    <p class="hero-text">
+                        The current app uses server-managed post-quantum envelope storage for document custody and supports ML-DSA as the maintained PQ signing path for high-assurance verification.
+                    </p>
+                </div>
+                <div>
+                    <h3>What users can verify</h3>
+                    <p class="hero-text">
+                        Each file is tied to hashes, custody events, signer metadata, version lineage, and optional external anchoring so the evidence package remains tamper-evident over time.
+                    </p>
+                </div>
+                <div>
+                    <h3>What is still maturing</h3>
+                    <p class="hero-text">
+                        Full browser-side PQ encryption and browser-native PQ signing are still in progress. Today the strongest PQ path is managed by the application backend and evidence model.
+                    </p>
+                </div>
+            </div>
+            <div class="marketing-grid">
+                <article class="panel marketing-card">
+                    <p class="eyebrow">ML-KEM Envelope Model</p>
+                    <h3>Protect storage with PQ-oriented envelope handling.</h3>
+                    <p class="hero-text">
+                        Active application storage stays fast, while the file custody model uses a post-quantum envelope approach instead of treating storage as a trusted plain blob.
+                    </p>
+                </article>
+                <article class="panel marketing-card">
+                    <p class="eyebrow">ML-DSA Signatures</p>
+                    <h3>Support a maintained PQ signature path.</h3>
+                    <p class="hero-text">
+                        Human wallet flows still support EVM and Solana, but the system also supports ML-DSA verification for users who need a stronger post-quantum signature story.
+                    </p>
+                </article>
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Evidence And Anchoring</p>
+                    <h3>Keep the proof portable.</h3>
+                    <p class="hero-text">
+                        Evidence bundles, hashes, signatures, and optional Arweave anchoring make the record verifiable beyond the immediate app session.
+                    </p>
+                </article>
             </div>
         </section>
 
