@@ -202,7 +202,7 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/inbox/:envelope_id/action", post(inbox_action_handler))
         .route("/auth/session", get(session_info_handler))
         .route("/auth/logout", post(logout_handler))
-        .nest_service("/", static_files)
+        .fallback_service(static_files)
         .with_state(state)
         .layer(CorsLayer::permissive());
 

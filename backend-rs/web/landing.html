@@ -11,13 +11,17 @@
         <header class="marketing-nav">
             <a class="marketing-brand" href="/">TIDBIT-share-WEAVE</a>
             <div class="marketing-nav-actions">
+                <a class="button-link" href="#intro">Intro</a>
+                <a class="button-link" href="#agents">AI Agents</a>
+                <a class="button-link" href="#docs">Docs</a>
                 <a class="button-link" href="/pricing">Pricing</a>
-                <a class="button-link" href="https://github.com/TangoisdownHQ/TIDBIT-share-WEAVE/tree/main/docs">Docs</a>
+                <a class="button-link" href="https://github.com/TangoisdownHQ/TIDBIT-share-WEAVE/tree/main/docs">GitHub Docs</a>
+                <a class="button-link" href="https://github.com/TangoisdownHQ/TIDBIT-share-WEAVE">GitHub</a>
                 <a class="button-primary marketing-login" href="/app">Open App</a>
             </div>
         </header>
 
-        <section class="marketing-hero">
+        <section id="intro" class="marketing-hero">
             <div class="marketing-copy">
                 <p class="eyebrow">Wallet-Native Review And Signing</p>
                 <h1>Verifiable document custody for humans and AI agents.</h1>
@@ -34,6 +38,7 @@
                 <div class="marketing-cta">
                     <a class="button-primary" href="/app">Use The App</a>
                     <a class="button-link" href="/pricing">See Pricing</a>
+                    <a class="button-link" href="https://github.com/TangoisdownHQ/TIDBIT-share-WEAVE">View GitHub</a>
                 </div>
             </div>
             <aside class="panel marketing-proof">
@@ -46,6 +51,32 @@
                     <li>Evidence can be exported and optionally anchored externally.</li>
                 </ul>
             </aside>
+        </section>
+
+        <section class="panel marketing-section">
+            <div class="section-head">
+                <h2>What The Tool Actually Does</h2>
+            </div>
+            <div class="marketing-columns">
+                <div>
+                    <h3>For humans</h3>
+                    <p class="hero-text">
+                        Upload, review, sign, share, version, and export evidence from one workspace with wallet-native access.
+                    </p>
+                </div>
+                <div>
+                    <h3>For recipients</h3>
+                    <p class="hero-text">
+                        Open from wallet share, email link, SMS link, or public signing route, then review before signing.
+                    </p>
+                </div>
+                <div>
+                    <h3>For compliance</h3>
+                    <p class="hero-text">
+                        Keep timestamps, actors, signatures, versions, share routes, and evidence together in one custody ledger.
+                    </p>
+                </div>
+            </div>
         </section>
 
         <section class="marketing-grid">
@@ -102,6 +133,83 @@
 
         <section class="panel marketing-section">
             <div class="section-head">
+                <h2>How Humans Use It</h2>
+            </div>
+            <div class="marketing-steps">
+                <div class="marketing-step">
+                    <strong>1. Login</strong>
+                    <p>Enter through MetaMask or Phantom and bind the session to a real wallet identity.</p>
+                </div>
+                <div class="marketing-step">
+                    <strong>2. Upload</strong>
+                    <p>Store the document, capture its hash, start custody events, and optionally anchor evidence later.</p>
+                </div>
+                <div class="marketing-step">
+                    <strong>3. Share</strong>
+                    <p>Route by wallet, email, phone, or public signing link depending on the recipient and workflow.</p>
+                </div>
+                <div class="marketing-step">
+                    <strong>4. Review And Sign</strong>
+                    <p>Preview before signing, then verify signer identity with EVM, Solana, guest, or ML-DSA paths.</p>
+                </div>
+                <div class="marketing-step">
+                    <strong>5. Export Evidence</strong>
+                    <p>Preserve the version lineage, custody history, share state, and signature evidence as one package.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="agents" class="panel marketing-section">
+            <div class="section-head">
+                <h2>How AI Agents Use It</h2>
+            </div>
+            <div class="marketing-grid">
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Agent Identity</p>
+                    <h3>Register the agent as a first-class actor.</h3>
+                    <p class="hero-text">
+                        Agents should not act as anonymous helpers. They need an identity, policy scope, and attributable event trail.
+                    </p>
+                </article>
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Agent Review</p>
+                    <h3>Let agents review and propose changes.</h3>
+                    <p class="hero-text">
+                        Agents can inspect a file, summarize it, suggest edits, or create a new version without silently overwriting the record.
+                    </p>
+                </article>
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Agent Sign</p>
+                    <h3>Gate approval through policy.</h3>
+                    <p class="hero-text">
+                        Agents can sign only if allowed by the document policy, and their actions stay exportable for audit and review.
+                    </p>
+                </article>
+            </div>
+            <div class="marketing-columns">
+                <div>
+                    <h3>Onboard an agent</h3>
+                    <p class="hero-text">
+                        Register an agent identity, issue its token, define whether it can review, version, or sign, then route it into the same custody ledger as human actors.
+                    </p>
+                </div>
+                <div>
+                    <h3>Export agent activity</h3>
+                    <p class="hero-text">
+                        Evidence exports can include which agent reviewed or signed, when it acted, which policy path was used, and what document state it touched.
+                    </p>
+                </div>
+                <div>
+                    <h3>Why it matters</h3>
+                    <p class="hero-text">
+                        The point is not “AI in the workflow.” The point is making AI actions attributable, reviewable, and non-silent.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel marketing-section">
+            <div class="section-head">
                 <h2>Best Early Buyers</h2>
             </div>
             <div class="marketing-columns">
@@ -116,6 +224,64 @@
                 <div>
                     <h3>High-assurance teams</h3>
                     <p class="hero-text">Teams that need more than a signed PDF and care about version lineage, export, and auditability.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="docs" class="panel marketing-section">
+            <div class="section-head">
+                <h2>Get Started, Docs, And Product Intro</h2>
+            </div>
+            <div class="marketing-grid">
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Get Started</p>
+                    <h3>Go straight into the app.</h3>
+                    <p class="hero-text">
+                        Use the live login entry to connect a wallet, upload a file, share it, review it, and inspect the custody history.
+                    </p>
+                    <div class="marketing-cta">
+                        <a class="button-primary" href="/app">Open App</a>
+                    </div>
+                </article>
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Documentation</p>
+                    <h3>Read the full system docs.</h3>
+                    <p class="hero-text">
+                        Architecture, user guide, code walkthrough, custody concepts, and audit notes are all documented in the GitHub docs folder.
+                    </p>
+                    <div class="marketing-cta">
+                        <a class="button-link" href="https://github.com/TangoisdownHQ/TIDBIT-share-WEAVE/tree/main/docs">Open Docs</a>
+                    </div>
+                </article>
+                <article class="panel marketing-card">
+                    <p class="eyebrow">Source And Audit</p>
+                    <h3>See the repo and current progress.</h3>
+                    <p class="hero-text">
+                        The GitHub repo includes workflow files, audit reports, dependency notes, and the current implementation state.
+                    </p>
+                    <div class="marketing-cta">
+                        <a class="button-link" href="https://github.com/TangoisdownHQ/TIDBIT-share-WEAVE">Open GitHub</a>
+                    </div>
+                </article>
+            </div>
+            <div class="marketing-columns">
+                <div>
+                    <h3>Introduction</h3>
+                    <p class="hero-text">
+                        TIDBIT-share-WEAVE is meant to bridge document workflow, wallet identity, evidence export, optional Arweave anchoring, and auditable AI participation.
+                    </p>
+                </div>
+                <div>
+                    <h3>Video walkthroughs</h3>
+                    <p class="hero-text">
+                        This section is where product tour videos, signer walkthroughs, and AI-agent demos should live once you publish Loom or YouTube links.
+                    </p>
+                </div>
+                <div>
+                    <h3>First test flow</h3>
+                    <p class="hero-text">
+                        Login, upload a file, share it to another wallet or public link, review it, sign it, then export the evidence package.
+                    </p>
                 </div>
             </div>
         </section>
