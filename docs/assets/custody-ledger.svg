@@ -26,8 +26,9 @@
   <text x="835" y="490" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">SIGN</text>
   <text x="835" y="522" fill="#d8f7e7" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">ENVELOPE_OPENED / COMPLETED</text>
 
-  <rect x="430" y="610" rx="18" ry="18" width="440" height="70" fill="#0c1730" stroke="#406fdd" stroke-width="2"/>
-  <text x="458" y="654" fill="#f4d2a1" font-size="20" font-family="Avenir Next, Segoe UI, sans-serif">All of these are stored in document_events and queried by doc_id.</text>
+  <rect x="380" y="610" rx="18" ry="18" width="540" height="86" fill="#0c1730" stroke="#406fdd" stroke-width="2"/>
+  <text x="420" y="650" fill="#f4d2a1" font-size="20" font-family="Avenir Next, Segoe UI, sans-serif">All of these are stored in document_events</text>
+  <text x="420" y="676" fill="#f4d2a1" font-size="20" font-family="Avenir Next, Segoe UI, sans-serif">and queried by doc_id.</text>
 
   <path d="M490 210 L350 300" stroke="#d2475d" stroke-width="6" fill="none"/>
   <path d="M810 210 L930 300" stroke="#2f8c62" stroke-width="6" fill="none"/>

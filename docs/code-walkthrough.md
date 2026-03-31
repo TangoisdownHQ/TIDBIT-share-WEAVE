@@ -26,6 +26,8 @@ Important route groups:
 - public signing routes
 - billing/account status
 
+`main.rs` is currently large because the project has been moving quickly. Functionally, it already contains the core business logic, but structurally it is still a strong candidate for future service extraction.
+
 ## Key Backend Areas
 
 ### Identity
@@ -58,6 +60,11 @@ What they do:
 - PQ signature verification helpers
 - key wrapping helpers
 
+Important current split:
+
+- ML-KEM envelope helpers are still in the PQ/envelope path
+- ML-DSA signing verification now uses the maintained `fips204` implementation inside `pqc/dilithium.rs`
+
 ### Storage
 
 Folder:
@@ -68,6 +75,8 @@ What it does:
 
 - uploads and retrieves object blobs from Supabase Storage
 - handles storage paths and object lifecycle helpers
+
+This area matters because storage paths, envelope storage, and access-controlled blob retrieval are part of the actual zero-trust boundary for the app.
 
 ### Delivery
 
@@ -109,6 +118,8 @@ Purpose:
 - upload the envelope blob
 - insert metadata into `documents`
 
+This function is one of the best places to study if you want to understand how the app bridges a normal upload flow and a custody-first storage model.
+
 ### `load_document_access_record`
 
 Purpose:
@@ -117,6 +128,8 @@ Purpose:
 - support owner access and chain-aware share access
 
 This is one of the most important trust boundaries in the app.
+
+If this function is wrong, the rest of the cryptography does not save the product. Access control is foundational.
 
 ### `share_doc_handler`
 
@@ -127,6 +140,13 @@ Purpose:
 - create the public token/signing URL
 - write custody events
 
+This function is important because it shows that "share" in this product is not one thing. It can involve:
+
+- wallet routing
+- public signing links
+- provider delivery
+- ledger events for each stage
+
 ### `sign_doc_handler`
 
 Purpose:
@@ -135,6 +155,8 @@ Purpose:
 - accept EVM, Solana, and PQ verification paths
 - write a `SIGN` event to the custody ledger
 
+This is the main function to read if you want to understand how the product supports multiple signing modes without treating them as identical under the hood.
+
 ### `public_envelope_sign_handler`
 
 Purpose:
@@ -142,6 +164,17 @@ Purpose:
 - support public signing links
 - allow guest, EVM, Solana, or PQ completion flow
 - mark envelope completion and record event history
+
+This is the best example of the product's "practical usability plus high-assurance audit" balance. It supports easier public flows while still writing structured custody history.
+
+### `backend-rs/src/sqlx.rs`
+
+Purpose:
+
+- expose only the Postgres-specific pieces this app actually needs
+- avoid the broader umbrella `sqlx` dependency graph
+
+This file exists because the project deliberately removed the heavier `sqlx` umbrella crate from the dependency graph to mitigate prior audit findings.
 
 ## Frontend Page Responsibilities
 
@@ -189,6 +222,23 @@ The tool is not a single blockchain app and not a single storage app. It is a la
    Arweave can anchor evidence externally.
 
 That layered approach is why the app can behave like a document-signing product while still preserving cryptographic custody and future decentralization options.
+
+## Review Concepts For Engineers
+
+When reviewing the code, it helps to separate five concerns:
+
+1. Identity
+   Wallets, guest links, and agents are not the same actor type.
+2. Authorization
+   Who can access the document is separate from who can sign it.
+3. Integrity
+   Hash checks and canonical signing messages tie actions to exact content.
+4. Custody
+   Important actions must become ledger events.
+5. Delivery
+   A link being created is not the same as a provider successfully delivering it.
+
+That mental model makes the code much easier to reason about.
 
 ## Current Engineering Gaps
 

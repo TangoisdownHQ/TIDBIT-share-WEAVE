@@ -47,6 +47,7 @@
     <path d="M330 482 L250 482" stroke="#406fdd" stroke-width="6" fill="none"/>
 
     <text x="360" y="560" fill="#f3f5fb" font-size="24" font-weight="700">Always Recorded</text>
-    <text x="360" y="596" fill="#a8b3d1" font-size="18">UPLOAD · VIEW · DOWNLOAD · SHARE · SIGN · VERSION_CREATED · DELIVERY_* · ENVELOPE_* </text>
+    <text x="360" y="596" fill="#a8b3d1" font-size="18">UPLOAD · VIEW · DOWNLOAD · SHARE · SIGN</text>
+    <text x="360" y="624" fill="#a8b3d1" font-size="18">VERSION_CREATED · DELIVERY_* · ENVELOPE_*</text>
   </g>
 </svg>

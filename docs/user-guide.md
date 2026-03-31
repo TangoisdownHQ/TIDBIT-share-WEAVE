@@ -16,6 +16,14 @@ TIDBIT-share-WEAVE lets users:
 - export evidence and audit history
 - inspect shared activity across files
 
+The app is designed for users who need more than simple "send a PDF and collect a click" behavior. It is aimed at flows where the user needs to know:
+
+- which file was seen
+- which version was signed
+- who took an action
+- when the action happened
+- how that action can be proven later
+
 ## Main Pages
 
 ### Login
@@ -27,6 +35,8 @@ The login page lets the user choose a wallet provider and authenticate with:
 
 Wallet identity is the root of user identity in the app.
 
+That means access, signing, and activity attribution are tied to cryptographic identity instead of a username/password account model.
+
 ### Home
 
 The Home tab shows top-level counts such as:
@@ -36,6 +46,8 @@ The Home tab shows top-level counts such as:
 - Arweave anchored files
 - shares created
 - inbox waiting
+
+Home is intentionally a summary page. It is the place to understand workspace state quickly, not the place to inspect every event.
 
 ### Inbox / Documents
 
@@ -55,6 +67,10 @@ From here, users can:
 - share
 - delete or dismiss inbox items
 
+`Inbox` is for documents that were routed to the active wallet.
+
+`Your Documents` is for documents the active wallet owns or has already accepted into active use.
+
 ### Shared
 
 This tab shows files the current wallet has sent to other people or wallets.
@@ -66,6 +82,13 @@ It surfaces:
 - share status
 - wallet route presence
 - provider delivery summary
+
+This is where a sender confirms whether a file was:
+
+- routed to a wallet recipient
+- prepared as a public signing link
+- sent through a delivery provider
+- blocked by delivery configuration or provider failure
 
 ### Shared Activity
 
@@ -88,6 +111,8 @@ The event cards are color-coded:
 - dark green for recipient-side activity
 - neutral styling for guest/system activity
 
+This tab is the fastest way to understand collaboration activity across multiple files without opening each document one by one.
+
 ### Billing
 
 The Billing tab currently shows workspace billing status for the active wallet:
@@ -101,6 +126,23 @@ The Billing tab currently shows workspace billing status for the active wallet:
 
 This is the scaffolding for the planned `30-day free -> $8/month` model.
 
+## Reviewing A Document Correctly
+
+The recommended review flow is:
+
+1. Open the file from `Inbox / Documents` or `Document Details`.
+2. Confirm the file label, version, and hash context.
+3. Review the preview content.
+4. If the flow requires a signature, sign only after the preview matches what you expect.
+5. Re-open details and confirm the custody history and `Last signed` state.
+
+Why this matters:
+
+- review and sign are separate actions
+- the app logs them separately
+- the correct version matters
+- the hash and signing message matter
+
 ## Typical User Flows
 
 ### 1. Upload And Sign Your Own File
@@ -112,6 +154,7 @@ This is the scaffolding for the planned `30-day free -> $8/month` model.
 5. Review the preview.
 6. Sign the file.
 7. Confirm `Last signed` and custody timeline entries.
+8. Export evidence if you need a portable proof package.
 
 ### 2. Share A File To Another Wallet
 
@@ -123,6 +166,8 @@ This is the scaffolding for the planned `30-day free -> $8/month` model.
 6. Create the signing link.
 7. The recipient receives access through the app inbox if the wallet route exists.
 
+If the wrong network is selected, sharing can fail or route incorrectly. The app prompts the sender to confirm the recipient network because EVM and Solana wallet identities are not interchangeable.
+
 ### 3. Share A File By Email Or SMS
 
 1. Open a document.
@@ -132,6 +177,12 @@ This is the scaffolding for the planned `30-day free -> $8/month` model.
 5. If providers are configured, the app can attempt delivery.
 6. If providers are not configured, the app still creates the signing URL and records that delivery was not provider-backed.
 
+Important:
+
+- a signing URL can exist even if an email or SMS was not actually sent
+- wallet routing and provider delivery are different concepts
+- the `Shared` tab is the best place to confirm what really happened
+
 ### 4. Review And Sign A Shared File
 
 1. Log in with the recipient wallet.
@@ -139,6 +190,8 @@ This is the scaffolding for the planned `30-day free -> $8/month` model.
 3. Review the shared file from the inbox.
 4. Sign the file with the correct wallet mode.
 5. Check the details page and shared activity feed.
+
+If you are a recipient, your actions should still appear on the document's custody history because sender and recipient activity share the same ledger by `doc_id`.
 
 ## Signing Modes
 
@@ -153,6 +206,8 @@ Used for Solana Ed25519 signature verification.
 ### PQ / ML-DSA
 
 Optional high-assurance mode where PQ signature material is provided and verified by the backend.
+
+The maintained implementation in the current codebase is ML-DSA through `fips204`.
 
 ## What Users See In The Audit Trail
 
@@ -173,6 +228,42 @@ Examples include:
 - `ENVELOPE_OPENED`
 - `ENVELOPE_COMPLETED`
 
+Each event may also carry details such as:
+
+- actor wallet or signer identity
+- chain
+- recorded server time
+- request origin and user-agent metadata
+- version references
+- signature metadata
+- delivery metadata
+- annotation metadata
+
+That is what makes the timeline useful for more than just UI history.
+
+## What "Last Signed" Means
+
+`Last signed` is a convenience summary, not the whole proof record.
+
+It helps the user answer:
+
+- has this file been signed recently?
+- when was the most recent signature event?
+
+The full custody timeline is still the deeper source of truth.
+
+## Evidence Export
+
+Evidence export is meant to package the important facts around a document so the history can be reviewed later outside the live app.
+
+Users should use evidence export when they need:
+
+- a portable summary of the document history
+- a record of who signed
+- a record of the hash and version lineage
+- a record of delivery and envelope events
+- a record of anchoring information if present
+
 ## Important Current Boundaries
 
 - Files are stored in Supabase Storage as app-managed PQ envelope objects.
@@ -180,3 +271,13 @@ Examples include:
 - Billing exists as status scaffolding, not full paid checkout yet.
 - Email/SMS delivery depends on provider configuration.
 - Office-class browser editing is not fully implemented yet.
+
+## Recommended User Mindset
+
+Users should think of the platform this way:
+
+- `Home` answers "what is happening in my workspace?"
+- `Inbox / Documents` answers "what files can I act on?"
+- `Shared` answers "what did I send and how was it routed?"
+- `Shared Activity` answers "what actions happened across my files?"
+- `Document Details` answers "what is the exact custody history of this file?"

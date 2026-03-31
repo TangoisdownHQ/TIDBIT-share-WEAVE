@@ -41,18 +41,19 @@
   <text x="528" y="514" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet routing · public links · Resend</text>
   <text x="528" y="540" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Twilio hooks · trial / subscription state</text>
 
-  <rect x="930" y="120" rx="24" ry="24" width="280" height="170" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
+  <rect x="920" y="120" rx="24" ry="24" width="300" height="190" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
   <text x="960" y="165" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Supabase Postgres</text>
   <text x="960" y="204" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">documents</text>
   <text x="960" y="230" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">document_events</text>
-  <text x="960" y="256" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">document_shares · account_subscriptions</text>
+  <text x="960" y="256" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">document_shares</text>
+  <text x="960" y="282" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">account_subscriptions</text>
 
-  <rect x="930" y="330" rx="24" ry="24" width="280" height="160" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
+  <rect x="920" y="340" rx="24" ry="24" width="300" height="160" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
   <text x="960" y="375" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Supabase Storage</text>
   <text x="960" y="414" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">active object storage</text>
   <text x="960" y="440" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">PQ envelope blobs</text>
 
-  <rect x="930" y="530" rx="24" ry="24" width="280" height="120" fill="url(#panel)" stroke="#2f8c62" stroke-width="2"/>
+  <rect x="920" y="540" rx="24" ry="24" width="300" height="130" fill="url(#panel)" stroke="#2f8c62" stroke-width="2"/>
   <text x="960" y="575" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Arweave</text>
   <text x="960" y="612" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">optional anchoring for file and</text>
   <text x="960" y="636" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">evidence bundle hashes</text>
@@ -65,8 +66,8 @@
   <text x="88" y="598" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">AI agents</text>
 
   <path d="M350 260 L490 260" stroke="url(#accent)" stroke-width="6" fill="none"/>
-  <path d="M810 205 L930 205" stroke="#406fdd" stroke-width="6" fill="none"/>
-  <path d="M810 410 L930 410" stroke="#406fdd" stroke-width="6" fill="none"/>
-  <path d="M810 590 L930 590" stroke="url(#green)" stroke-width="6" fill="none"/>
+  <path d="M810 205 L920 205" stroke="#406fdd" stroke-width="6" fill="none"/>
+  <path d="M810 420 L920 420" stroke="#406fdd" stroke-width="6" fill="none"/>
+  <path d="M810 605 L920 605" stroke="url(#green)" stroke-width="6" fill="none"/>
   <path d="M350 535 L490 535" stroke="url(#green)" stroke-width="6" fill="none"/>
 </svg>

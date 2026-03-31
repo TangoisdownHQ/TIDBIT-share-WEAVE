@@ -18,7 +18,7 @@
   <text x="96" y="542" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">delivery.rs</text>
   <text x="96" y="570" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Resend + Twilio delivery status</text>
 
-  <rect x="680" y="150" rx="24" ry="24" width="540" height="520" fill="#2b1320" stroke="#d2475d" stroke-width="2"/>
+  <rect x="680" y="150" rx="24" ry="24" width="540" height="540" fill="#2b1320" stroke="#d2475d" stroke-width="2"/>
   <text x="716" y="198" fill="#f3f5fb" font-size="28" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">backend-rs/web</text>
   <text x="716" y="246" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">index.html</text>
   <text x="716" y="274" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet login entry point</text>
@@ -30,4 +30,6 @@
   <text x="716" y="496" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">public envelope completion flow</text>
   <text x="716" y="542" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">app.js + style.css</text>
   <text x="716" y="570" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">behavior, rendering, theme, event cards</text>
+  <text x="716" y="616" fill="#f4d2a1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">sqlx.rs</text>
+  <text x="716" y="644" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Postgres-only database wrapper for the app</text>
 </svg>

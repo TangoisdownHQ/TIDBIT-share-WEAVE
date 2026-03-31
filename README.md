@@ -51,7 +51,7 @@ This makes it suitable for high-assurance environments where trust cannot be ass
 
 - AES-256-GCM / XChaCha20-Poly1305 payload protection
 - ML-KEM (Kyber) quantum-resistant key encapsulation
-- Dilithium post-quantum signatures
+- ML-DSA post-quantum signatures via a maintained FIPS 204 implementation
 - SHA3-256 tamper-evident hashing
 
 ### 🧾 Zero-Trust Chain-of-Custody
@@ -122,6 +122,7 @@ Current state includes:
 - Billing status scaffolding with 30-day trial metadata
 - Optional Arweave anchoring
 - Policy and agent API groundwork
+- Clean Rust dependency audit at the current checkpoint
 
 Still in progress:
 
@@ -138,6 +139,16 @@ Still in progress:
 - Evidence bundle anchoring
 - Subscription billing checkout and enforcement
 - Production deployment
+
+## 🔎 Security And Audit Progress
+
+Recent dependency hardening work included:
+
+- removing the broader `sqlx` umbrella dependency in favor of `sqlx-core` and `sqlx-postgres`
+- replacing the previous PQ signing dependency with a maintained ML-DSA implementation
+- re-running `cargo audit` until the Rust dependency graph was clean
+
+See the [Audit Folder](./audit/README.md) for the detailed history and current state.
 
 ## 🧬 Why This Exists
 

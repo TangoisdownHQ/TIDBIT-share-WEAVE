@@ -8,6 +8,16 @@
 
 TIDBIT-share-WEAVE is a static frontend plus Rust backend system.
 
+The important architectural idea is that the application separates:
+
+- identity
+- storage
+- metadata
+- custody events
+- external anchoring
+
+That separation is what lets the app behave like a document-signing workspace without collapsing everything into one opaque storage layer.
+
 ### Frontend
 
 Location:
@@ -54,6 +64,13 @@ The central app state is:
 - `PgPool`
 - `SupabaseStorage`
 
+In practice, the backend is the trust coordinator. It decides:
+
+- whether an actor can access a document
+- how a canonical signing message is built
+- when a custody event is written
+- whether a share is wallet-routed, provider-routed, or both
+
 ## Data Systems
 
 ### Supabase Postgres
@@ -69,11 +86,15 @@ Supabase Postgres stores:
 
 This is the authoritative metadata and custody ledger store.
 
+If you want to know what happened to a document, Postgres is the first place to look because that is where the application ledger lives.
+
 ### Supabase Storage
 
 Supabase Storage holds the live stored file objects.
 
 In the current flow, the app stores the PQ envelope object there and serves verified/decrypted content through backend routes.
+
+This means the browser is not fetching arbitrary direct storage links as the primary trust path. The backend remains responsible for access checks and object decoding.
 
 ### Arweave
 
@@ -83,6 +104,11 @@ Arweave is optional and used for anchoring:
 - evidence bundle references
 
 It is not the primary active file store.
+
+This is an important design choice:
+
+- Supabase is optimized for application storage and retrieval
+- Arweave is treated as an external anchoring and permanence layer
 
 ## Request And Storage Flow
 
@@ -96,6 +122,8 @@ It is not the primary active file store.
 6. `UPLOAD` event is written into `document_events`.
 7. Optional Arweave anchoring records a tx id on the document.
 
+This is where the app begins the formal chain of custody for a file.
+
 ### Review Flow
 
 1. Frontend requests `/api/doc/:id/review`.
@@ -104,6 +132,8 @@ It is not the primary active file store.
 4. Frontend fetches the blob through the internal blob route.
 5. Frontend recomputes the hash and compares it with the custody hash.
 
+That is the core review integrity check.
+
 ### Sign Flow
 
 1. Frontend builds a canonical signing message.
@@ -111,6 +141,8 @@ It is not the primary active file store.
 3. Backend verifies the signature type.
 4. Backend writes a `SIGN` event into `document_events`.
 5. Frontend refreshes timeline and document state.
+
+The important boundary here is that signing is not accepted just because a client says "signed." The backend verifies the signature against the canonical message first.
 
 ### Share Flow
 
@@ -123,6 +155,15 @@ It is not the primary active file store.
    - `DELIVERY_DISPATCHED` or `DELIVERY_FAILED`
 6. Recipient sees the file in inbox if wallet routing applies.
 
+The share flow can create several different outcomes:
+
+- wallet-only route
+- public-link route
+- provider-backed route
+- mixed route
+
+Those are related but not identical, which is why delivery metadata is part of the custody story.
+
 ## Access Model
 
 The access model is wallet-first.
@@ -133,6 +174,8 @@ A document is visible if:
 - or a share row grants access to that wallet/chain
 
 This is important because shared documents are not copied into a separate workspace store. Both sender and recipient interact with the same document ledger by `doc_id`.
+
+That is also why recipient actions should be visible on the same custody timeline as sender actions.
 
 ## Shared Activity Model
 
@@ -147,6 +190,11 @@ That means the app supports:
 - cross-document shared activity feed
 
 The per-document timeline remains the source of truth.
+
+Think of it as:
+
+- document timeline = exact ledger for one file
+- shared activity = workspace feed across many files
 
 ## Billing Model
 
@@ -169,6 +217,15 @@ Current status:
 - enforcement can be toggled by env
 - full Stripe checkout is not implemented yet
 
+## Audit Progress
+
+The dependency audit progressed in two meaningful steps:
+
+1. The project removed the umbrella `sqlx` crate and replaced it with `sqlx-core` plus `sqlx-postgres`, which removed unused MySQL and SQLite branches from the resolved graph.
+2. The project replaced the prior PQ signing dependency with the maintained `fips204` ML-DSA implementation.
+
+That is why the current Rust audit state is now clean.
+
 ## Security Notes
 
 ### Strong Points
@@ -179,6 +236,7 @@ Current status:
 - optional PQ signature verification
 - version lineage
 - evidence export
+- clean Rust dependency audit at the current checkpoint
 
 ### Current Boundaries
 
