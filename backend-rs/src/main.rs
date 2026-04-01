@@ -35,7 +35,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::error::AppError;
-use crate::identity_web::evm::{verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
+use crate::identity_web::evm::{evm_login_message, verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
 use crate::identity_web::state::WalletSession;
 use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
 use crate::sqlx::postgres::PgPoolOptions;
@@ -46,7 +46,8 @@ use crate::models::{
 };
 use crate::crypto::canonical::{
     canonicalize::canonical_json,
-    keystore::load_or_create_mlkem_keypair,
+    keystore::{load_mlkem_keypair_if_exists, MlKemKeypairFile},
+    kem::mlkem_generate_keypair_b64,
     CanonicalDocumentV1,
     DocumentEnvelopeV1,
 };
@@ -331,7 +332,101 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    sqlx::query(
+        r#"
+        create table if not exists wallet_mlkem_keys (
+            wallet text primary key,
+            kem text not null default 'mlkem768',
+            pk_b64 text not null,
+            sk_b64 text not null,
+            source text not null default 'generated',
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
     Ok(())
+}
+
+async fn load_server_mlkem_keypair(db: &PgPool, wallet: &str) -> Result<Option<MlKemKeypairFile>, AppError> {
+    let wallet = wallet.trim().to_lowercase();
+    let row = sqlx::query(
+        "select wallet, kem, pk_b64, sk_b64 from wallet_mlkem_keys where wallet = $1",
+    )
+    .bind(&wallet)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(row.map(|row| MlKemKeypairFile {
+        wallet: row.get("wallet"),
+        kem: row.get("kem"),
+        pk_b64: row.get("pk_b64"),
+        sk_b64: row.get("sk_b64"),
+    }))
+}
+
+async fn persist_server_mlkem_keypair(
+    db: &PgPool,
+    keys: &MlKemKeypairFile,
+    source: &str,
+) -> Result<MlKemKeypairFile, AppError> {
+    let row = sqlx::query(
+        r#"
+        insert into wallet_mlkem_keys (wallet, kem, pk_b64, sk_b64, source, created_at, updated_at)
+        values ($1, $2, $3, $4, $5, now(), now())
+        on conflict (wallet) do update
+            set updated_at = now()
+        returning wallet, kem, pk_b64, sk_b64
+        "#,
+    )
+    .bind(&keys.wallet)
+    .bind(&keys.kem)
+    .bind(&keys.pk_b64)
+    .bind(&keys.sk_b64)
+    .bind(source)
+    .fetch_one(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(MlKemKeypairFile {
+        wallet: row.get("wallet"),
+        kem: row.get("kem"),
+        pk_b64: row.get("pk_b64"),
+        sk_b64: row.get("sk_b64"),
+    })
+}
+
+async fn load_or_create_server_mlkem_keypair(
+    db: &PgPool,
+    owner_wallet: &str,
+) -> Result<MlKemKeypairFile, AppError> {
+    let wallet = owner_wallet.trim().to_lowercase();
+    if wallet.is_empty() {
+        return Err(AppError::BadRequest("wallet is empty".into()));
+    }
+
+    if let Some(keys) = load_server_mlkem_keypair(db, &wallet).await? {
+        return Ok(keys);
+    }
+
+    if let Some(keys) = load_mlkem_keypair_if_exists(&wallet)
+        .map_err(|e| AppError::Internal(format!("mlkem keystore: {e}")))?
+    {
+        return persist_server_mlkem_keypair(db, &keys, "filesystem_import").await;
+    }
+
+    let kp = mlkem_generate_keypair_b64();
+    let keys = MlKemKeypairFile {
+        wallet: wallet.clone(),
+        kem: "mlkem768".into(),
+        pk_b64: kp.pk_b64,
+        sk_b64: kp.sk_b64,
+    };
+
+    persist_server_mlkem_keypair(db, &keys, "generated").await
 }
 
 fn billing_trial_days() -> i64 {
@@ -800,15 +895,15 @@ fn base64_standard(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-fn build_document_envelope(
+async fn build_document_envelope(
+    db: &PgPool,
     owner_wallet: &str,
     document_id: uuid::Uuid,
     label: Option<&str>,
     mime_type: &str,
     plaintext: &[u8],
 ) -> Result<(Vec<u8>, String), AppError> {
-    let keys = load_or_create_mlkem_keypair(owner_wallet)
-        .map_err(|e| AppError::Crypto(format!("mlkem keystore: {e}")))?;
+    let keys = load_or_create_server_mlkem_keypair(db, owner_wallet).await?;
     let doc = CanonicalDocumentV1::from_plaintext(
         document_id.to_string(),
         plaintext,
@@ -829,9 +924,12 @@ fn build_document_envelope(
     Ok((canonical, ciphertext_hash_hex))
 }
 
-fn decrypt_document_envelope(owner_wallet: &str, encrypted_bytes: &[u8]) -> Result<Vec<u8>, AppError> {
-    let keys = load_or_create_mlkem_keypair(owner_wallet)
-        .map_err(|e| AppError::Crypto(format!("mlkem keystore: {e}")))?;
+async fn decrypt_document_envelope(
+    db: &PgPool,
+    owner_wallet: &str,
+    encrypted_bytes: &[u8],
+) -> Result<Vec<u8>, AppError> {
+    let keys = load_or_create_server_mlkem_keypair(db, owner_wallet).await?;
     let envelope: DocumentEnvelopeV1 = serde_json::from_slice(encrypted_bytes)
         .map_err(|e| AppError::Crypto(format!("envelope parse: {e}")))?;
     envelope
@@ -850,7 +948,7 @@ async fn load_document_bytes_for_access(
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let bytes = if access.encryption_mode == "pq_envelope_server_managed" {
-        decrypt_document_envelope(&access.owner_wallet, &stored)?
+        decrypt_document_envelope(&st.db, &access.owner_wallet, &stored).await?
     } else {
         stored
     };
@@ -1062,7 +1160,7 @@ async fn create_document_record(
     let id = uuid::Uuid::new_v4();
     let version = parent_version.map(|value| value + 1).unwrap_or(1);
     let (stored_bytes, ciphertext_hash_hex) =
-        build_document_envelope(owner_wallet, id, label.as_deref(), &mime_type, bytes)?;
+        build_document_envelope(&st.db, owner_wallet, id, label.as_deref(), &mime_type, bytes).await?;
     let storage_path = st
         .storage
         .upload_bytes(
@@ -1131,7 +1229,44 @@ async fn evm_verify_handler_app(
     State(st): State<AppState>,
     Json(body): Json<EvmVerifyRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    identity_web::evm_verify_handler(State(st.auth.clone()), Json(body)).await
+    let sid = body.session_id.trim();
+    let address = body.address.trim().to_lowercase();
+    let signature = body.signature.trim();
+
+    if sid.is_empty() {
+        return Err(AppError::Auth("Missing session_id".into()));
+    }
+    if address.is_empty() {
+        return Err(AppError::Auth("Empty address".into()));
+    }
+    if signature.is_empty() {
+        return Err(AppError::Auth("Empty signature".into()));
+    }
+
+    let nonce = st
+        .auth
+        .take_nonce(sid)
+        .ok_or_else(|| AppError::Auth("Unknown or expired session".into()))?;
+
+    let message = evm_login_message(&nonce);
+    let recovered = verify_evm_signature(&message, signature)
+        .map_err(|_| AppError::Auth("Invalid signature".into()))?
+        .to_lowercase();
+
+    if recovered != address {
+        return Err(AppError::Auth("Signature does not match address".into()));
+    }
+
+    st.auth.bind_wallet(sid.to_string(), address.clone(), "evm");
+
+    let keys = load_or_create_server_mlkem_keypair(&st.db, &address).await?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "wallet": address,
+        "chain": "evm",
+        "mlkem_pk_b64": keys.pk_b64
+    })))
 }
 
 async fn sol_nonce_handler_app(
@@ -1148,10 +1283,13 @@ async fn sol_verify_handler_app(
         .await
         .map_err(|(_, message)| AppError::Auth(message))?;
 
+    let keys = load_or_create_server_mlkem_keypair(&st.db, &res.address).await?;
+
     Ok(Json(json!({
         "ok": true,
         "wallet": res.address,
-        "chain": "sol"
+        "chain": "sol",
+        "mlkem_pk_b64": keys.pk_b64
     })))
 }
 
@@ -3498,8 +3636,7 @@ async fn session_info_handler(
         .auth
         .get_session(sid)
         .ok_or_else(|| AppError::Auth("Invalid session".into()))?;
-    let keys = load_or_create_mlkem_keypair(&sess.wallet)
-        .map_err(|e| AppError::Internal(format!("mlkem keystore: {e}")))?;
+    let keys = load_or_create_server_mlkem_keypair(&st.db, &sess.wallet).await?;
 
     Ok(Json(json!({
         "active": true,
