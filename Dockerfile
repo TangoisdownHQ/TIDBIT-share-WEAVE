@@ -27,4 +27,7 @@ ENV PORT=4100
 
 EXPOSE 4100
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/bin/sh", "-c", "test -x /usr/local/bin/tidbit"]
+
 CMD ["/usr/local/bin/tidbit", "server"]
