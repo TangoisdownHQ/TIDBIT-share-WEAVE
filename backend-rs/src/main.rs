@@ -23,6 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 use clap::Parser;
@@ -38,6 +39,7 @@ use crate::error::AppError;
 use crate::identity_web::evm::{evm_login_message, verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
 use crate::identity_web::state::WalletSession;
 use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
+use crate::crypto::aes_gcm;
 use crate::sqlx::postgres::PgPoolOptions;
 use crate::sqlx::{PgPool, Row};
 use crate::models::{
@@ -338,7 +340,9 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
             wallet text primary key,
             kem text not null default 'mlkem768',
             pk_b64 text not null,
-            sk_b64 text not null,
+            sk_b64 text null,
+            sk_b64_enc text null,
+            sk_nonce_b64 text null,
             source text not null default 'generated',
             created_at timestamptz not null default now(),
             updated_at timestamptz not null default now()
@@ -347,25 +351,75 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     )
     .execute(db)
     .await?;
+    sqlx::query("alter table wallet_mlkem_keys add column if not exists sk_b64 text null")
+        .execute(db)
+        .await?;
+    sqlx::query("alter table wallet_mlkem_keys add column if not exists sk_b64_enc text null")
+        .execute(db)
+        .await?;
+    sqlx::query("alter table wallet_mlkem_keys add column if not exists sk_nonce_b64 text null")
+        .execute(db)
+        .await?;
     Ok(())
+}
+
+fn load_mlkem_db_master_key() -> Result<[u8; 32], AppError> {
+    let raw = std::env::var("MLKEM_DB_MASTER_KEY_B64")
+        .map_err(|_| AppError::Internal("Missing MLKEM_DB_MASTER_KEY_B64".into()))?;
+    let decoded = BASE64_STANDARD
+        .decode(raw.trim())
+        .map_err(|_| AppError::Internal("Invalid MLKEM_DB_MASTER_KEY_B64 encoding".into()))?;
+    if decoded.len() != 32 {
+        return Err(AppError::Internal("MLKEM_DB_MASTER_KEY_B64 must decode to 32 bytes".into()));
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&decoded);
+    Ok(key)
+}
+
+fn encrypt_mlkem_secret(sk_b64: &str) -> Result<(String, String), AppError> {
+    let key = load_mlkem_db_master_key()?;
+    let (nonce, ciphertext) = aes_gcm::encrypt_aes_gcm(&key, sk_b64.as_bytes())?;
+    Ok((BASE64_STANDARD.encode(ciphertext), BASE64_STANDARD.encode(nonce)))
+}
+
+fn decrypt_mlkem_secret(sk_b64_enc: &str, sk_nonce_b64: &str) -> Result<String, AppError> {
+    let key = load_mlkem_db_master_key()?;
+    let ciphertext = BASE64_STANDARD
+        .decode(sk_b64_enc)
+        .map_err(|_| AppError::Internal("Invalid encrypted ML-KEM secret encoding".into()))?;
+    let nonce = BASE64_STANDARD
+        .decode(sk_nonce_b64)
+        .map_err(|_| AppError::Internal("Invalid ML-KEM secret nonce encoding".into()))?;
+    let plaintext = aes_gcm::decrypt_aes_gcm(&key, &nonce, &ciphertext)?;
+    String::from_utf8(plaintext).map_err(|_| AppError::Internal("ML-KEM secret is not valid UTF-8".into()))
 }
 
 async fn load_server_mlkem_keypair(db: &PgPool, wallet: &str) -> Result<Option<MlKemKeypairFile>, AppError> {
     let wallet = wallet.trim().to_lowercase();
     let row = sqlx::query(
-        "select wallet, kem, pk_b64, sk_b64 from wallet_mlkem_keys where wallet = $1",
+        "select wallet, kem, pk_b64, sk_b64, sk_b64_enc, sk_nonce_b64 from wallet_mlkem_keys where wallet = $1",
     )
     .bind(&wallet)
     .fetch_optional(db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(row.map(|row| MlKemKeypairFile {
-        wallet: row.get("wallet"),
-        kem: row.get("kem"),
-        pk_b64: row.get("pk_b64"),
-        sk_b64: row.get("sk_b64"),
-    }))
+    row.map(|row| {
+        let sk_b64_enc: Option<String> = row.get("sk_b64_enc");
+        let sk_nonce_b64: Option<String> = row.get("sk_nonce_b64");
+        let sk_b64 = match (sk_b64_enc, sk_nonce_b64) {
+            (Some(cipher), Some(nonce)) => decrypt_mlkem_secret(&cipher, &nonce)?,
+            _ => row.get("sk_b64"),
+        };
+        Ok(MlKemKeypairFile {
+            wallet: row.get("wallet"),
+            kem: row.get("kem"),
+            pk_b64: row.get("pk_b64"),
+            sk_b64,
+        })
+    })
+    .transpose()
 }
 
 async fn persist_server_mlkem_keypair(
@@ -373,19 +427,28 @@ async fn persist_server_mlkem_keypair(
     keys: &MlKemKeypairFile,
     source: &str,
 ) -> Result<MlKemKeypairFile, AppError> {
+    let (sk_b64_enc, sk_nonce_b64) = encrypt_mlkem_secret(&keys.sk_b64)?;
     let row = sqlx::query(
         r#"
-        insert into wallet_mlkem_keys (wallet, kem, pk_b64, sk_b64, source, created_at, updated_at)
-        values ($1, $2, $3, $4, $5, now(), now())
+        insert into wallet_mlkem_keys (
+            wallet, kem, pk_b64, sk_b64, sk_b64_enc, sk_nonce_b64, source, created_at, updated_at
+        )
+        values ($1, $2, $3, null, $4, $5, $6, now(), now())
         on conflict (wallet) do update
-            set updated_at = now()
-        returning wallet, kem, pk_b64, sk_b64
+            set pk_b64 = excluded.pk_b64,
+                sk_b64 = null,
+                sk_b64_enc = excluded.sk_b64_enc,
+                sk_nonce_b64 = excluded.sk_nonce_b64,
+                source = excluded.source,
+                updated_at = now()
+        returning wallet, kem, pk_b64, sk_b64_enc, sk_nonce_b64
         "#,
     )
     .bind(&keys.wallet)
     .bind(&keys.kem)
     .bind(&keys.pk_b64)
-    .bind(&keys.sk_b64)
+    .bind(&sk_b64_enc)
+    .bind(&sk_nonce_b64)
     .bind(source)
     .fetch_one(db)
     .await
@@ -395,7 +458,7 @@ async fn persist_server_mlkem_keypair(
         wallet: row.get("wallet"),
         kem: row.get("kem"),
         pk_b64: row.get("pk_b64"),
-        sk_b64: row.get("sk_b64"),
+        sk_b64: decrypt_mlkem_secret(&row.get::<String, _>("sk_b64_enc"), &row.get::<String, _>("sk_nonce_b64"))?,
     })
 }
 
