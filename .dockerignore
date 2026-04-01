@@ -8,3 +8,4 @@ node_modules
 audit
 docs
 docker
+!docker/start.sh
