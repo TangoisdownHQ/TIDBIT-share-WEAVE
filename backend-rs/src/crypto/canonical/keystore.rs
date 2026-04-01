@@ -70,6 +70,19 @@ pub fn load_or_create_mlkem_keypair(owner_wallet: &str) -> Result<MlKemKeypairFi
     Ok(kf)
 }
 
+pub fn load_mlkem_keypair_if_exists(owner_wallet: &str) -> Result<Option<MlKemKeypairFile>, String> {
+    let path = mlkem_key_path(owner_wallet)?;
+
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let data = fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;
+    let kf: MlKemKeypairFile =
+        serde_json::from_str(&data).map_err(|e| format!("json parse: {e}"))?;
+    Ok(Some(kf))
+}
+
 pub fn load_mlkem_pk(owner_wallet: &str) -> Result<String, String> {
     let kf = load_or_create_mlkem_keypair(owner_wallet)?;
     Ok(kf.pk_b64)
