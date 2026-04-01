@@ -118,15 +118,19 @@ struct DocumentBytesResponse {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Server => start_server().await?,
-        Commands::Auth { action } => auth::handle_auth(action).await?,
-        Commands::Wallet { action } => wallet::handle_wallet(action).await?,
-        Commands::Doc { action } => doc::handle_doc(action).await?,
-        Commands::C2c { action } => cli_c2c::handle_c2c(action).await?,
+    let result = match cli.command {
+        Commands::Server => start_server().await,
+        Commands::Auth { action } => auth::handle_auth(action).await,
+        Commands::Wallet { action } => wallet::handle_wallet(action).await,
+        Commands::Doc { action } => doc::handle_doc(action).await,
+        Commands::C2c { action } => cli_c2c::handle_c2c(action).await,
+    };
+
+    if let Err(err) = &result {
+        eprintln!("fatal error: {err:#}");
     }
 
-    Ok(())
+    result
 }
 
 // ================================================================
@@ -134,17 +138,22 @@ async fn main() -> anyhow::Result<()> {
 // ================================================================
 
 async fn start_server() -> anyhow::Result<()> {
+    eprintln!("boot: starting server bootstrap");
     let auth_state = identity_web::AuthState::new();
 
+    eprintln!("boot: loading DATABASE_URL");
+    let database_url = std::env::var("DATABASE_URL")?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&std::env::var("DATABASE_URL")?)
+        .connect(&database_url)
         .await?;
 
+    eprintln!("boot: ensuring runtime schema");
     ensure_runtime_schema(&pool).await?;
 
-    println!("Connected to Supabase Postgres");
+    eprintln!("boot: connected to Supabase Postgres");
 
+    eprintln!("boot: loading storage environment");
     let storage = SupabaseStorage::new(
         std::env::var("SUPABASE_URL")?,
         std::env::var("SUPABASE_SERVICE_ROLE_KEY")?,
@@ -215,9 +224,10 @@ async fn start_server() -> anyhow::Result<()> {
         .unwrap_or(4100);
     let addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
 
-    println!("Server running at http://{addr}");
+    eprintln!("boot: binding server to http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    eprintln!("boot: listener ready");
     axum::serve(listener, app).await?;
 
     Ok(())
