@@ -12,7 +12,7 @@ RUN cd backend-rs && cargo build --release
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl libgcc-s1 \
     && useradd --system --create-home --uid 10001 tidbit \
     && rm -rf /var/lib/apt/lists/*
 
