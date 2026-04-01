@@ -3,11 +3,10 @@ FROM rust:1.90-bookworm AS builder
 WORKDIR /app
 
 COPY backend-rs/Cargo.toml backend-rs/Cargo.lock ./backend-rs/
-RUN mkdir -p backend-rs/src && printf 'fn main() {}\n' > backend-rs/src/main.rs
-RUN cd backend-rs && cargo build --release
+RUN cd backend-rs && cargo fetch --locked
 
 COPY backend-rs ./backend-rs
-RUN cd backend-rs && cargo build --release
+RUN cd backend-rs && cargo build --release --locked
 
 FROM rust:1.90-bookworm
 
