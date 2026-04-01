@@ -11,11 +11,17 @@ RUN cd backend-rs && cargo build --release
 
 FROM rust:1.90-bookworm
 
+RUN useradd --system --create-home --uid 10001 tidbit
+
 WORKDIR /app/backend-rs
 
 COPY --from=builder /app/backend-rs/target/release/tidbit /usr/local/bin/tidbit
 COPY --from=builder /app/backend-rs/web ./web
 COPY --from=builder /app/backend-rs/migrations ./migrations
+
+RUN chown -R tidbit:tidbit /app/backend-rs
+
+USER tidbit
 
 ENV PORT=4100
 
