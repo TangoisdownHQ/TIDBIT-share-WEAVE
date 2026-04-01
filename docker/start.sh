@@ -18,4 +18,8 @@ echo "wrapper: web dir contents"
 ls -la /app/backend-rs/web | sed -n '1,10p' || true
 echo "wrapper: launching server"
 
-exec /usr/local/bin/tidbit server
+set +e
+/usr/local/bin/tidbit server 2>&1
+status=$?
+echo "wrapper: tidbit exited with status=${status}"
+exit "${status}"
