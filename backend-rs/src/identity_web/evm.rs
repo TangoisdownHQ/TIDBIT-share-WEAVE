@@ -22,15 +22,17 @@ pub struct EvmNonceResponse {
     pub message: String,
 }
 
-pub async fn evm_nonce_handler(State(st): State<AuthState>) -> Json<EvmNonceResponse> {
-    let (session_id, nonce) = st.create_nonce();
+pub async fn evm_nonce_handler(
+    State(st): State<AuthState>,
+) -> Result<Json<EvmNonceResponse>, AppError> {
+    let (session_id, nonce) = st.create_nonce().await?;
     let message = evm_login_message(&nonce);
 
-    Json(EvmNonceResponse {
+    Ok(Json(EvmNonceResponse {
         session_id,
         nonce,
         message,
-    })
+    }))
 }
 
 // ============================================================
@@ -64,6 +66,7 @@ pub async fn evm_verify_handler(
 
     let nonce = st
         .take_nonce(sid)
+        .await?
         .ok_or_else(|| AppError::Auth("Unknown or expired session".into()))?;
 
     let message = evm_login_message(&nonce);
@@ -76,7 +79,8 @@ pub async fn evm_verify_handler(
         return Err(AppError::Auth("Signature does not match address".into()));
     }
 
-    st.bind_wallet(sid.to_string(), address.clone(), "evm");
+    st.bind_wallet(sid.to_string(), address.clone(), "evm", None, None, None)
+        .await?;
 
     let keys = load_or_create_mlkem_keypair(&address)
         .map_err(|e| AppError::Internal(format!("mlkem keystore: {e}")))?;

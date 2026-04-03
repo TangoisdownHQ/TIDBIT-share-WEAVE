@@ -18,7 +18,7 @@ mod storage;
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::HeaderMap;
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -28,7 +28,9 @@ use base64::Engine;
 use clap::Parser;
 use cli::commands::{auth, c2c as cli_c2c, doc, wallet};
 use cli::parser::{Cli, Commands};
+use hmac::{Hmac, Mac};
 use serde_json::json;
+use sha2::Sha256;
 use std::collections::HashMap;
 
 use tower_http::cors::CorsLayer;
@@ -142,8 +144,6 @@ async fn main() -> anyhow::Result<()> {
 
 async fn start_server() -> anyhow::Result<()> {
     eprintln!("boot: starting server bootstrap");
-    let auth_state = identity_web::AuthState::new();
-
     eprintln!("boot: loading DATABASE_URL");
     let database_url = std::env::var("DATABASE_URL")?;
     let pool = PgPoolOptions::new()
@@ -155,6 +155,7 @@ async fn start_server() -> anyhow::Result<()> {
     ensure_runtime_schema(&pool).await?;
 
     eprintln!("boot: connected to Supabase Postgres");
+    let auth_state = identity_web::AuthState::new(pool.clone());
 
     eprintln!("boot: loading storage environment");
     let storage = SupabaseStorage::new(
@@ -210,16 +211,21 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/doc/:id/sign", post(sign_doc_handler))
         .route("/api/doc/:id/delete", post(delete_doc_handler))
         .route("/api/doc/:id/share", post(share_doc_handler))
+        .route(
+            "/api/doc/:id/share/:envelope_id/revoke",
+            post(revoke_share_handler),
+        )
         .route("/api/agent/doc/:id/review", get(agent_review_doc_handler))
         .route("/api/agent/doc/:id/sign", post(agent_sign_doc_handler))
         .route("/api/agent/doc/:id/version", post(agent_version_doc_handler))
         .route("/api/inbox", get(list_inbox_handler))
         .route("/api/inbox/:envelope_id/action", post(inbox_action_handler))
         .route("/auth/session", get(session_info_handler))
+        .route("/auth/session/rotate", post(rotate_session_handler))
         .route("/auth/logout", post(logout_handler))
         .fallback_service(static_files)
         .with_state(state)
-        .layer(CorsLayer::permissive());
+        .layer(configured_cors_layer()?);
 
     let port = std::env::var("PORT")
         .ok()
@@ -271,6 +277,43 @@ fn normalize_wallet_for_chain(wallet: &str, chain: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn configured_cors_layer() -> Result<CorsLayer, AppError> {
+    let configured = std::env::var("ALLOWED_ORIGINS").unwrap_or_default();
+    let mut origins: Vec<String> = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+
+    if origins.is_empty() {
+        origins.push("http://127.0.0.1:4100".to_string());
+        origins.push("http://localhost:4100".to_string());
+        if let Ok(url) = reqwest::Url::parse(&public_app_url()) {
+            origins.push(url.origin().ascii_serialization());
+        }
+    }
+
+    let header_values = origins
+        .into_iter()
+        .map(|origin| {
+            HeaderValue::from_str(&origin)
+                .map_err(|_| AppError::Internal(format!("Invalid CORS origin: {origin}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::HeaderName::from_static("x-session-id"),
+            header::HeaderName::from_static("x-device-id"),
+            header::HeaderName::from_static("x-agent-token"),
+        ])
+        .allow_origin(header_values))
 }
 
 async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
@@ -326,6 +369,107 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     sqlx::query("alter table wallet_mlkem_keys add column if not exists sk_nonce_b64 text null")
         .execute(db)
         .await?;
+    sqlx::query(
+        r#"
+        create table if not exists wallet_auth_nonces (
+            session_id text primary key,
+            nonce text not null,
+            created_at timestamptz not null default now(),
+            expires_at timestamptz not null,
+            consumed_at timestamptz null
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        create table if not exists wallet_sessions (
+            session_id text primary key,
+            session_family_id uuid not null,
+            wallet text not null,
+            chain text not null,
+            created_at timestamptz not null default now(),
+            last_seen_at timestamptz not null default now(),
+            expires_at timestamptz not null,
+            revoked_at timestamptz null,
+            revoked_reason text null,
+            replaced_by_session_id text null,
+            device_id text null,
+            user_agent text null,
+            ip_address text null
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_wallet_sessions_wallet_active on wallet_sessions (wallet, expires_at desc) where revoked_at is null",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_wallet_auth_nonces_expires on wallet_auth_nonces (expires_at)",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        alter table document_shares
+            add column if not exists access_token_hash text,
+            add column if not exists expires_at timestamptz,
+            add column if not exists revoked_at timestamptz,
+            add column if not exists revoked_reason text,
+            add column if not exists one_time_use boolean not null default false,
+            add column if not exists download_allowed boolean not null default true,
+            add column if not exists allow_guest_sign boolean,
+            add column if not exists open_count integer not null default 0,
+            add column if not exists completion_count integer not null default 0
+        "#,
+    )
+    .execute(db)
+    .await?;
+    let legacy_share_rows = sqlx::query(
+        "select id, access_token from document_shares where access_token is not null and access_token_hash is null",
+    )
+    .fetch_all(db)
+    .await?;
+    for row in legacy_share_rows {
+        let share_id: uuid::Uuid = row.get("id");
+        let access_token: String = row.get("access_token");
+        sqlx::query(
+            "update document_shares set access_token_hash = $2 where id = $1 and access_token_hash is null",
+        )
+        .bind(share_id)
+        .bind(access_token_hash_hex(&access_token))
+        .execute(db)
+        .await?;
+    }
+    sqlx::query(
+        "update document_shares set access_token = null where access_token is not null and access_token_hash is not null",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create unique index if not exists idx_document_shares_access_token_hash on document_shares (access_token_hash) where access_token_hash is not null",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_document_shares_public_active on document_shares (access_token_hash, expires_at, revoked_at)",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
+        alter table document_events
+            add column if not exists prev_event_hash_hex text,
+            add column if not exists event_hash_hex text,
+            add column if not exists event_hmac_b64 text
+        "#,
+    )
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -569,7 +713,7 @@ fn build_share_event_payload(
     recipient_name: Option<&str>,
     recipient_email: Option<&str>,
     recipient_phone: Option<&str>,
-    access_token: Option<&str>,
+    access_token_hash: Option<&str>,
 ) -> serde_json::Value {
     json!({
         "recipient_wallet": recipient_wallet,
@@ -580,23 +724,47 @@ fn build_share_event_payload(
         "signature": signature,
         "recipient_email": recipient_email,
         "recipient_phone": recipient_phone,
-        "access_token": access_token
+        "access_token_hash": access_token_hash
     })
 }
 
-fn require_wallet_from_headers(st: &AppState, headers: &HeaderMap) -> Result<String, AppError> {
-    Ok(require_session_from_headers(st, headers)?.wallet)
+fn device_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-device-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
-fn require_session_from_headers(st: &AppState, headers: &HeaderMap) -> Result<WalletSession, AppError> {
+fn ip_from_headers(headers: &HeaderMap) -> Option<String> {
+    header_value(headers, "x-forwarded-for")
+        .or_else(|| header_value(headers, "x-real-ip"))
+        .map(|value| value.split(',').next().unwrap_or("").trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn user_agent_from_headers(headers: &HeaderMap) -> Option<String> {
+    header_value(headers, "user-agent")
+}
+
+async fn require_wallet_from_headers(st: &AppState, headers: &HeaderMap) -> Result<String, AppError> {
+    Ok(require_session_from_headers(st, headers).await?.wallet)
+}
+
+async fn require_session_from_headers(
+    st: &AppState,
+    headers: &HeaderMap,
+) -> Result<WalletSession, AppError> {
     let sid = headers
         .get("x-session-id")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::Auth("Missing x-session-id".into()))?;
 
-    st
-        .auth
-        .get_session(sid)
+    st.auth
+        .get_session(sid, device_id_from_headers(headers).as_deref())
+        .await
+        ?
         .ok_or_else(|| AppError::Auth("Invalid or expired session".into()))
 }
 
@@ -604,9 +772,41 @@ fn token_hash_hex(token: &str) -> String {
     hex::encode(pqc_sha3::sha3_256_bytes(token.as_bytes()))
 }
 
+fn access_token_hash_hex(token: &str) -> String {
+    token_hash_hex(token)
+}
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn load_audit_hmac_key() -> Option<Vec<u8>> {
+    if let Ok(raw) = std::env::var("AUDIT_HMAC_KEY_B64") {
+        return BASE64_STANDARD.decode(raw.trim()).ok();
+    }
+    std::env::var("MLKEM_DB_MASTER_KEY_B64")
+        .ok()
+        .and_then(|raw| BASE64_STANDARD.decode(raw.trim()).ok())
+}
+
+fn audit_key_id() -> &'static str {
+    if std::env::var("AUDIT_HMAC_KEY_B64").is_ok() {
+        "audit_hmac_env"
+    } else if std::env::var("MLKEM_DB_MASTER_KEY_B64").is_ok() {
+        "mlkem_db_master_fallback"
+    } else {
+        "unsigned"
+    }
+}
+
+fn sign_hmac_b64(bytes: &[u8]) -> Option<String> {
+    let key = load_audit_hmac_key()?;
+    let mut mac = HmacSha256::new_from_slice(&key).ok()?;
+    mac.update(bytes);
+    Some(BASE64_STANDARD.encode(mac.finalize().into_bytes()))
+}
+
 fn default_document_policy() -> serde_json::Value {
     json!({
-        "allow_guest_sign": true,
+        "allow_guest_sign": false,
         "allow_agent_review": true,
         "allow_agent_sign": false,
         "require_human_countersign": true,
@@ -782,6 +982,90 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 
 fn multipart_error(context: &str, err: impl std::fmt::Display) -> AppError {
     AppError::BadRequest(format!("{context}: {err}"))
+}
+
+fn event_chain_hash_hex(
+    doc_id: uuid::Uuid,
+    actor_wallet: &str,
+    event_type: &str,
+    payload: &serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    prev_event_hash_hex: Option<&str>,
+) -> Result<String, AppError> {
+    let canonical = canonical_json(&json!({
+        "doc_id": doc_id,
+        "actor_wallet": actor_wallet,
+        "event_type": event_type,
+        "payload": payload,
+        "created_at": created_at.to_rfc3339(),
+        "prev_event_hash_hex": prev_event_hash_hex
+    }));
+    Ok(hex::encode(pqc_sha3::sha3_256_bytes(&canonical)))
+}
+
+async fn insert_document_event(
+    db: &PgPool,
+    doc_id: uuid::Uuid,
+    actor_wallet: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+) -> Result<uuid::Uuid, AppError> {
+    let previous = crate::sqlx::query(
+        r#"
+        select event_hash_hex
+        from document_events
+        where doc_id = $1
+        order by created_at desc, id desc
+        limit 1
+        "#,
+    )
+    .bind(doc_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    let prev_event_hash_hex = previous.and_then(|row| row.get::<Option<String>, _>("event_hash_hex"));
+    let created_at = chrono::Utc::now();
+    let event_hash_hex = event_chain_hash_hex(
+        doc_id,
+        actor_wallet,
+        event_type,
+        &payload,
+        created_at,
+        prev_event_hash_hex.as_deref(),
+    )?;
+    let event_hmac_b64 = sign_hmac_b64(event_hash_hex.as_bytes());
+    let id = uuid::Uuid::new_v4();
+
+    crate::sqlx::query(
+        r#"
+        insert into document_events (
+            id,
+            doc_id,
+            actor_wallet,
+            event_type,
+            payload,
+            created_at,
+            prev_event_hash_hex,
+            event_hash_hex,
+            event_hmac_b64
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        "#,
+    )
+    .bind(id)
+    .bind(doc_id)
+    .bind(actor_wallet)
+    .bind(event_type)
+    .bind(payload)
+    .bind(created_at)
+    .bind(prev_event_hash_hex)
+    .bind(&event_hash_hex)
+    .bind(event_hmac_b64)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(id)
 }
 
 fn session_actor_json(session: &WalletSession) -> serde_json::Value {
@@ -1030,6 +1314,25 @@ fn envelope_signing_url(access_token: &str) -> String {
     format!("{}/public-sign.html?token={access_token}", public_app_url())
 }
 
+fn default_share_expiry_hours() -> i64 {
+    std::env::var("DEFAULT_SHARE_EXPIRY_HOURS")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(24 * 7)
+}
+
+fn clamp_share_expiry_hours(hours: Option<i64>) -> i64 {
+    hours.unwrap_or_else(default_share_expiry_hours).clamp(1, 24 * 30)
+}
+
+fn public_guest_attestation_enabled() -> bool {
+    std::env::var("ALLOW_PUBLIC_GUEST_ATTESTATION")
+        .ok()
+        .map(|value| bool_from_form_text(&value))
+        .unwrap_or(false)
+}
+
 fn redact_token(token: Option<&str>) -> Option<String> {
     token.map(|value| {
         if value.len() <= 8 {
@@ -1250,12 +1553,23 @@ async fn create_document_record(
 // AUTH
 // ================================================================
 
-async fn evm_nonce_handler_app(State(st): State<AppState>) -> Json<EvmNonceResponse> {
-    identity_web::evm_nonce_handler(State(st.auth.clone())).await
+async fn evm_nonce_handler_app(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<EvmNonceResponse>, AppError> {
+    let (session_id, nonce) = st.auth.create_nonce().await?;
+    let message = evm_login_message(&nonce);
+    let _ = headers;
+    Ok(Json(EvmNonceResponse {
+        session_id,
+        nonce,
+        message,
+    }))
 }
 
 async fn evm_verify_handler_app(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<EvmVerifyRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let sid = body.session_id.trim();
@@ -1275,6 +1589,7 @@ async fn evm_verify_handler_app(
     let nonce = st
         .auth
         .take_nonce(sid)
+        .await?
         .ok_or_else(|| AppError::Auth("Unknown or expired session".into()))?;
 
     let message = evm_login_message(&nonce);
@@ -1286,12 +1601,23 @@ async fn evm_verify_handler_app(
         return Err(AppError::Auth("Signature does not match address".into()));
     }
 
-    st.auth.bind_wallet(sid.to_string(), address.clone(), "evm");
+    let session = st
+        .auth
+        .bind_wallet(
+            sid.to_string(),
+            address.clone(),
+            "evm",
+            device_id_from_headers(&headers).as_deref(),
+            user_agent_from_headers(&headers).as_deref(),
+            ip_from_headers(&headers).as_deref(),
+        )
+        .await?;
 
     let keys = load_or_create_server_mlkem_keypair(&st.db, &address).await?;
 
     Ok(Json(json!({
         "ok": true,
+        "session_id": session.session_id,
         "wallet": address,
         "chain": "evm",
         "mlkem_pk_b64": keys.pk_b64
@@ -1300,21 +1626,61 @@ async fn evm_verify_handler_app(
 
 async fn sol_nonce_handler_app(
     State(st): State<AppState>,
-) -> Json<identity_web::sol::SolNonceResponse> {
-    identity_web::sol::sol_nonce_handler(State(st.auth.clone())).await
+) -> Result<Json<identity_web::sol::SolNonceResponse>, AppError> {
+    let (session_id, nonce) = st.auth.create_nonce().await?;
+    let message = identity_web::sol::sol_login_message(&nonce);
+    Ok(Json(identity_web::sol::SolNonceResponse {
+        session_id,
+        nonce,
+        message,
+    }))
 }
 
 async fn sol_verify_handler_app(
     State(st): State<AppState>,
+    headers: HeaderMap,
     Json(body): Json<identity_web::sol::SolVerifyRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let res = identity_web::sol::sol_verify_handler(State(st.auth.clone()), Json(body)).await?;
+    let session_id = body.session_id.trim();
+    let address = body.address.trim();
+    let signature = body.signature.trim();
 
-    let keys = load_or_create_server_mlkem_keypair(&st.db, &res.address).await?;
+    if session_id.is_empty() {
+        return Err(AppError::Auth("Missing session_id".into()));
+    }
+    if address.is_empty() {
+        return Err(AppError::Auth("Empty address".into()));
+    }
+    if signature.is_empty() {
+        return Err(AppError::Auth("Empty signature".into()));
+    }
+
+    let nonce = st
+        .auth
+        .take_nonce(session_id)
+        .await?
+        .ok_or_else(|| AppError::Auth("Unknown or expired session".into()))?;
+    let message = identity_web::sol::sol_login_message(&nonce);
+    verify_solana_signature(&message, address, signature)
+        .map_err(|_| AppError::Auth("Invalid Solana signature".into()))?;
+    let session = st
+        .auth
+        .bind_wallet(
+            session_id.to_string(),
+            address.to_string(),
+            "sol",
+            device_id_from_headers(&headers).as_deref(),
+            user_agent_from_headers(&headers).as_deref(),
+            ip_from_headers(&headers).as_deref(),
+        )
+        .await?;
+
+    let keys = load_or_create_server_mlkem_keypair(&st.db, address).await?;
 
     Ok(Json(json!({
         "ok": true,
-        "wallet": res.address,
+        "session_id": session.session_id,
+        "wallet": address,
         "chain": "sol",
         "mlkem_pk_b64": keys.pk_b64
     })))
@@ -1328,7 +1694,7 @@ async fn list_docs_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = normalize_wallet_for_chain(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
@@ -1411,7 +1777,7 @@ async fn list_shared_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
 
     let rows = sqlx::query(
         r#"
@@ -1425,6 +1791,10 @@ async fn list_shared_handler(
             s.recipient_phone,
             s.status,
             s.delivery_json,
+            s.expires_at,
+            s.revoked_at,
+            s.one_time_use,
+            s.download_allowed,
             s.created_at,
             d.label,
             d.hash_hex,
@@ -1454,6 +1824,10 @@ async fn list_shared_handler(
                     "recipient_phone": r.get::<Option<String>,_>("recipient_phone"),
                     "status": r.get::<String,_>("status"),
                     "delivery_json": r.get::<serde_json::Value,_>("delivery_json"),
+                    "expires_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("expires_at"),
+                    "revoked_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("revoked_at"),
+                    "one_time_use": r.get::<bool,_>("one_time_use"),
+                    "download_allowed": r.get::<bool,_>("download_allowed"),
                     "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
                     "label": r.get::<Option<String>,_>("label"),
                     "hash_hex": r.get::<String,_>("hash_hex"),
@@ -1468,7 +1842,7 @@ async fn list_shared_activity_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = normalize_wallet_for_chain(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
@@ -1544,7 +1918,7 @@ async fn overview_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = normalize_wallet_for_chain(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
@@ -1664,7 +2038,7 @@ async fn account_status_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = normalize_wallet_for_chain(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
@@ -1681,7 +2055,7 @@ async fn list_doc_events_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -1718,7 +2092,7 @@ async fn export_doc_evidence_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let access = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -1888,7 +2262,7 @@ async fn anchor_evidence_bundle_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -1945,7 +2319,7 @@ async fn get_document_policy_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -1967,7 +2341,7 @@ async fn set_document_policy_handler(
     Path(id): Path<uuid::Uuid>,
     Json(body): Json<DocumentPolicyUpdateRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -2021,7 +2395,7 @@ async fn register_agent_handler(
     headers: HeaderMap,
     Json(body): Json<AgentRegisterRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let token = format!("agt_{}", uuid::Uuid::new_v4().simple());
     let token_hash = token_hash_hex(&token);
@@ -2061,7 +2435,7 @@ async fn list_agents_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
 
     let rows = sqlx::query(
@@ -2100,7 +2474,7 @@ async fn rotate_agent_token_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let token = format!("agt_{}", uuid::Uuid::new_v4().simple());
     let token_hash = token_hash_hex(&token);
@@ -2142,7 +2516,7 @@ async fn revoke_agent_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
 
     let row = sqlx::query(
@@ -2367,7 +2741,7 @@ async fn upload_doc_handler(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
 
     let mut file_bytes = None;
@@ -2468,7 +2842,7 @@ async fn create_document_version_handler(
     Path(parent_doc_id): Path<uuid::Uuid>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let parent = load_document_access_record(&st.db, parent_doc_id, &wallet, &session.chain).await?;
 
@@ -2608,7 +2982,7 @@ async fn review_doc_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -2656,7 +3030,7 @@ async fn doc_blob_handler(
     Path(id): Path<uuid::Uuid>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let access = load_document_access_record(&st.db, id, &session.wallet, &session.chain).await?;
     let doc = load_document_bytes_for_access(&st, &access).await?;
     let disposition = params.get("download").map(|value| value == "1" || value == "true");
@@ -2700,7 +3074,7 @@ async fn download_doc_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
@@ -2743,7 +3117,7 @@ async fn sign_doc_handler(
     Path(doc_id): Path<uuid::Uuid>,
     Json(body): Json<SignRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, doc_id, &wallet, &session.chain)
         .await
@@ -2846,7 +3220,7 @@ async fn delete_doc_handler(
     headers: HeaderMap,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
 
     let result = sqlx::query("update documents set is_deleted = true where id = $1 and owner_wallet = $2")
@@ -2883,7 +3257,7 @@ async fn share_doc_handler(
     Path(doc_id): Path<uuid::Uuid>,
     Json(body): Json<ShareRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let sender = session.wallet.clone();
     let sender_chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&sender));
     let requested_wallet = body
@@ -2925,6 +3299,12 @@ async fn share_doc_handler(
     let hash_hex: String = doc.get("hash_hex");
     let envelope_id = uuid::Uuid::new_v4();
     let access_token = uuid::Uuid::new_v4().simple().to_string();
+    let access_token_hash = access_token_hash_hex(&access_token);
+    let expires_in_hours = clamp_share_expiry_hours(body.expires_in_hours);
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(expires_in_hours);
+    let one_time_use = body.one_time_use.unwrap_or(false);
+    let download_allowed = body.download_allowed.unwrap_or(true);
+    let allow_guest_sign = body.allow_guest_sign;
     let recipient_chain = requested_wallet
         .as_deref()
         .map(|wallet| {
@@ -2956,8 +3336,8 @@ async fn share_doc_handler(
 
     sqlx::query(
         r#"insert into document_shares
-        (doc_id, sender_wallet, recipient_wallet, recipient_chain, recipient_name, envelope_id, note, recipient_email, recipient_phone, access_token, status, delivery_json)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
+        (doc_id, sender_wallet, recipient_wallet, recipient_chain, recipient_name, envelope_id, note, recipient_email, recipient_phone, access_token_hash, expires_at, one_time_use, download_allowed, allow_guest_sign, status, delivery_json)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)"#,
     )
     .bind(doc_id)
     .bind(&sender)
@@ -2968,7 +3348,11 @@ async fn share_doc_handler(
     .bind(&body.note)
     .bind(&requested_email)
     .bind(&requested_phone)
-    .bind(&access_token)
+    .bind(&access_token_hash)
+    .bind(expires_at)
+    .bind(one_time_use)
+    .bind(download_allowed)
+    .bind(allow_guest_sign)
     .bind(initial_status)
     .bind(json!([]))
     .execute(&st.db)
@@ -3007,80 +3391,81 @@ async fn share_doc_handler(
         &delivery_errors,
     );
 
-    sqlx::query("update document_shares set delivery_json = $2, status = $3 where access_token = $1")
-        .bind(&access_token)
+    sqlx::query("update document_shares set delivery_json = $2, status = $3 where access_token_hash = $1")
+        .bind(&access_token_hash)
         .bind(serde_json::to_value(&deliveries).map_err(|e| AppError::Internal(e.to_string()))?)
         .bind(final_status)
         .execute(&st.db)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    sqlx::query(
-        "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'SHARE',$3)",
-    )
-    .bind(doc_id)
-    .bind(&sender)
-    .bind(custody_payload(
-        build_share_event_payload(
-            recipient_wallet.as_deref(),
-            recipient_chain.as_deref(),
-            body.note.as_deref(),
-            envelope_id,
-            body.signature.as_deref(),
-            recipient_name.as_deref(),
-            requested_email.as_deref(),
-            requested_phone.as_deref(),
-            Some(&access_token),
-        ),
-        &session,
-        &headers,
-    ))
-    .execute(&st.db)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    for outcome in &deliveries {
-        sqlx::query(
-            "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'DELIVERY_DISPATCHED',$3)",
-        )
-        .bind(doc_id)
-        .bind(&sender)
-        .bind(custody_payload(
+    insert_document_event(
+        &st.db,
+        doc_id,
+        &sender,
+        "SHARE",
+        custody_payload(
             json!({
-                "envelope_id": envelope_id,
-                "channel": outcome.channel,
-                "provider": outcome.provider,
-                "recipient": outcome.recipient,
-                "external_id": outcome.external_id,
-                "status": outcome.status,
+                "recipient_wallet": recipient_wallet,
                 "recipient_chain": recipient_chain,
-                "sender_chain": sender_chain
+                "note": body.note,
+                "envelope_id": envelope_id,
+                "signature": body.signature,
+                "recipient_name": recipient_name,
+                "recipient_email": requested_email,
+                "recipient_phone": requested_phone,
+                "access_token_hash": access_token_hash,
+                "expires_at": expires_at,
+                "one_time_use": one_time_use,
+                "download_allowed": download_allowed,
+                "allow_guest_sign": allow_guest_sign
             }),
             &session,
             &headers,
-        ))
-        .execute(&st.db)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        ),
+    )
+    .await?;
+
+    for outcome in &deliveries {
+        insert_document_event(
+            &st.db,
+            doc_id,
+            &sender,
+            "DELIVERY_DISPATCHED",
+            custody_payload(
+                json!({
+                    "envelope_id": envelope_id,
+                    "channel": outcome.channel,
+                    "provider": outcome.provider,
+                    "recipient": outcome.recipient,
+                    "external_id": outcome.external_id,
+                    "status": outcome.status,
+                    "recipient_chain": recipient_chain,
+                    "sender_chain": sender_chain
+                }),
+                &session,
+                &headers,
+            ),
+        )
+        .await?;
     }
 
     for error in &delivery_errors {
-        sqlx::query(
-            "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'DELIVERY_FAILED',$3)",
+        insert_document_event(
+            &st.db,
+            doc_id,
+            &sender,
+            "DELIVERY_FAILED",
+            custody_payload(
+                json!({
+                    "envelope_id": envelope_id,
+                    "error": error
+                }),
+                &session,
+                &headers,
+            ),
         )
-        .bind(doc_id)
-        .bind(&sender)
-        .bind(custody_payload(
-            json!({
-                "envelope_id": envelope_id,
-                "error": error
-            }),
-            &session,
-            &headers,
-        ))
-        .execute(&st.db)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .await?;
     }
 
     Ok(Json(json!({
@@ -3096,8 +3481,73 @@ async fn share_doc_handler(
         "recipient_phone": requested_phone,
         "signing_url": signing_url,
         "status": final_status,
+        "expires_at": expires_at,
+        "one_time_use": one_time_use,
+        "download_allowed": download_allowed,
+        "allow_guest_sign": allow_guest_sign,
         "delivery": deliveries,
         "delivery_errors": delivery_errors
+    })))
+}
+
+async fn revoke_share_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path((doc_id, envelope_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_session_from_headers(&st, &headers).await?;
+    let sender = session.wallet.clone();
+
+    let updated = sqlx::query(
+        r#"
+        update document_shares
+        set
+            revoked_at = now(),
+            revoked_reason = 'sender_revoked',
+            status = 'revoked'
+        where doc_id = $1
+          and envelope_id = $2
+          and sender_wallet = $3
+          and revoked_at is null
+        returning recipient_wallet, recipient_chain, recipient_email, recipient_phone
+        "#,
+    )
+    .bind(doc_id)
+    .bind(envelope_id)
+    .bind(&sender)
+    .fetch_optional(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let Some(updated) = updated else {
+        return Err(AppError::NotFound("Share not found or already revoked".into()));
+    };
+
+    insert_document_event(
+        &st.db,
+        doc_id,
+        &sender,
+        "SHARE_REVOKED",
+        custody_payload(
+            json!({
+                "envelope_id": envelope_id,
+                "recipient_wallet": updated.get::<Option<String>, _>("recipient_wallet"),
+                "recipient_chain": updated.get::<Option<String>, _>("recipient_chain"),
+                "recipient_email": updated.get::<Option<String>, _>("recipient_email"),
+                "recipient_phone": updated.get::<Option<String>, _>("recipient_phone"),
+                "reason": "sender_revoked"
+            }),
+            &session,
+            &headers,
+        ),
+    )
+    .await?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "doc_id": doc_id,
+        "envelope_id": envelope_id,
+        "status": "revoked"
     })))
 }
 
@@ -3105,7 +3555,7 @@ async fn list_inbox_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = normalize_wallet_for_chain(&session.wallet, canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)));
     let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
@@ -3172,7 +3622,7 @@ async fn inbox_action_handler(
     Path(envelope_id): Path<uuid::Uuid>,
     Json(body): Json<InboxActionRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_session_from_headers(&st, &headers)?;
+    let session = require_session_from_headers(&st, &headers).await?;
     let wallet = normalize_wallet_for_chain(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
@@ -3270,6 +3720,7 @@ async fn public_envelope_handler(
     headers: HeaderMap,
     Path(token): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let token_hash = access_token_hash_hex(token.trim());
     let row = sqlx::query(
         r#"
         select
@@ -3287,20 +3738,27 @@ async fn public_envelope_handler(
             s.viewed_at,
             s.delivery_json,
             s.annotation_json,
+            s.expires_at,
+            s.revoked_at,
+            s.one_time_use,
+            s.download_allowed,
+            s.allow_guest_sign,
+            s.completion_count,
             d.label,
             d.hash_hex,
             d.version,
             d.mime_type,
             d.storage_path,
+            d.owner_wallet,
             d.parent_id,
             d.arweave_tx
         from document_shares s
         join documents d on d.id = s.doc_id
-        where s.access_token = $1
+        where s.access_token_hash = $1
           and d.is_deleted = false
         "#,
     )
-    .bind(token.trim())
+    .bind(&token_hash)
     .fetch_optional(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -3311,37 +3769,64 @@ async fn public_envelope_handler(
 
     let doc_id: uuid::Uuid = row.get("doc_id");
     let envelope_id: uuid::Uuid = row.get("envelope_id");
-    let storage_path: String = row.get("storage_path");
     let status: String = row.get("status");
+    let expires_at: Option<chrono::DateTime<chrono::Utc>> = row.get("expires_at");
+    let revoked_at: Option<chrono::DateTime<chrono::Utc>> = row.get("revoked_at");
+    let one_time_use: bool = row.get("one_time_use");
+    let download_allowed: bool = row.get("download_allowed");
+    let completion_count: i32 = row.get("completion_count");
     let viewed_at: Option<chrono::DateTime<chrono::Utc>> = row.get("viewed_at");
+    if revoked_at.is_some() {
+        return Err(AppError::Forbidden("This share link has been revoked".into()));
+    }
+    if expires_at.map(|value| value <= chrono::Utc::now()).unwrap_or(false) {
+        return Err(AppError::Forbidden("This share link has expired".into()));
+    }
+    if one_time_use && completion_count > 0 {
+        return Err(AppError::Forbidden("This one-time share link has already been used".into()));
+    }
+    let owner_wallet: String = row.get("owner_wallet");
+    let policy = load_document_policy(&st.db, doc_id, &owner_wallet).await?;
+    let allow_guest_sign = row
+        .get::<Option<bool>, _>("allow_guest_sign")
+        .unwrap_or_else(|| policy.get("allow_guest_sign").and_then(|value| value.as_bool()).unwrap_or(false));
+    let allowed_signature_types = {
+        let mut modes = Vec::new();
+        if allow_guest_sign && public_guest_attestation_enabled() {
+            modes.push("guest_attestation");
+        }
+        modes.push("evm_personal_sign");
+        modes.push("sol_ed25519");
+        modes.push("pq_mldsa65");
+        modes
+    };
     if viewed_at.is_none() {
-        sqlx::query("update document_shares set viewed_at = now(), status = 'opened' where access_token = $1 and viewed_at is null")
-            .bind(token.trim())
+        sqlx::query("update document_shares set viewed_at = now(), open_count = open_count + 1, status = 'opened' where access_token_hash = $1 and viewed_at is null")
+            .bind(&token_hash)
             .execute(&st.db)
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        sqlx::query(
-            "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'ENVELOPE_OPENED',$3)",
+        insert_document_event(
+            &st.db,
+            doc_id,
+            &format!("guest-envelope:{envelope_id}"),
+            "ENVELOPE_OPENED",
+            public_custody_payload_for_envelope(
+                json!({
+                    "envelope_id": envelope_id,
+                    "recipient_wallet": row.get::<Option<String>,_>("recipient_wallet"),
+                    "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
+                    "recipient_name": row.get::<Option<String>,_>("recipient_name"),
+                    "recipient_email": row.get::<Option<String>,_>("recipient_email"),
+                    "recipient_phone": row.get::<Option<String>,_>("recipient_phone"),
+                    "status": "opened"
+                }),
+                envelope_id,
+                &headers,
+            ),
         )
-        .bind(doc_id)
-        .bind(format!("guest-envelope:{envelope_id}"))
-        .bind(public_custody_payload_for_envelope(
-            json!({
-                "envelope_id": envelope_id,
-                "recipient_wallet": row.get::<Option<String>,_>("recipient_wallet"),
-                "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
-                "recipient_name": row.get::<Option<String>,_>("recipient_name"),
-                "recipient_email": row.get::<Option<String>,_>("recipient_email"),
-                "recipient_phone": row.get::<Option<String>,_>("recipient_phone"),
-                "status": "opened"
-            }),
-            envelope_id,
-            &headers,
-        ))
-        .execute(&st.db)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .await?;
     }
 
     Ok(Json(json!({
@@ -3357,6 +3842,11 @@ async fn public_envelope_handler(
         "delivery": row.get::<serde_json::Value,_>("delivery_json"),
         "annotation_json": row.get::<serde_json::Value,_>("annotation_json"),
         "status": if viewed_at.is_none() { "opened" } else { status.as_str() },
+        "expires_at": expires_at,
+        "one_time_use": one_time_use,
+        "download_allowed": download_allowed,
+        "allow_guest_sign": allow_guest_sign,
+        "allowed_signature_types": allowed_signature_types,
         "label": row.get::<Option<String>,_>("label"),
         "hash_hex": row.get::<String,_>("hash_hex"),
         "version": row.get::<i32,_>("version"),
@@ -3372,6 +3862,7 @@ async fn public_envelope_blob_handler(
     State(st): State<AppState>,
     Path(token): Path<String>,
 ) -> Result<Response, AppError> {
+    let token_hash = access_token_hash_hex(token.trim());
     let row = sqlx::query(
         r#"
         select
@@ -3385,14 +3876,19 @@ async fn public_envelope_blob_handler(
             d.parent_id,
             d.arweave_tx,
             coalesce(d.encryption_mode, 'plaintext_server_managed') as encryption_mode,
-            d.ciphertext_hash_hex
+            d.ciphertext_hash_hex,
+            s.expires_at,
+            s.revoked_at,
+            s.one_time_use,
+            s.download_allowed,
+            s.completion_count
         from document_shares s
         join documents d on d.id = s.doc_id
-        where s.access_token = $1
+        where s.access_token_hash = $1
           and d.is_deleted = false
         "#,
     )
-    .bind(token.trim())
+    .bind(&token_hash)
     .fetch_optional(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -3400,6 +3896,21 @@ async fn public_envelope_blob_handler(
     let Some(row) = row else {
         return Err(AppError::NotFound("Envelope not found".into()));
     };
+    let expires_at: Option<chrono::DateTime<chrono::Utc>> = row.get("expires_at");
+    let revoked_at: Option<chrono::DateTime<chrono::Utc>> = row.get("revoked_at");
+    let one_time_use: bool = row.get("one_time_use");
+    let download_allowed: bool = row.get("download_allowed");
+    let completion_count: i32 = row.get("completion_count");
+
+    if revoked_at.is_some() {
+        return Err(AppError::Forbidden("This share link has been revoked".into()));
+    }
+    if expires_at.map(|value| value <= chrono::Utc::now()).unwrap_or(false) {
+        return Err(AppError::Forbidden("This share link has expired".into()));
+    }
+    if one_time_use && completion_count > 0 {
+        return Err(AppError::Forbidden("This one-time share link has already been used".into()));
+    }
 
     let access = DocumentAccessRecord {
         id: row.get("id"),
@@ -3421,7 +3932,18 @@ async fn public_envelope_blob_handler(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, doc.mime_type),
-            (header::CONTENT_DISPOSITION, "inline".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                if download_allowed {
+                    "inline".to_string()
+                } else {
+                    "inline; filename=\"preview\"".to_string()
+                },
+            ),
+            (
+                header::CACHE_CONTROL,
+                "no-store, max-age=0".to_string(),
+            ),
             (header::HeaderName::from_static("x-tidbit-hash"), doc.hash_hex),
             (
                 header::HeaderName::from_static("x-tidbit-version"),
@@ -3443,12 +3965,19 @@ async fn public_envelope_sign_handler(
     Path(token): Path<String>,
     Json(body): Json<PublicEnvelopeSignRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let token_hash = access_token_hash_hex(token.trim());
     let row = sqlx::query(
         r#"
         select
             s.doc_id,
             s.envelope_id,
             s.status,
+            s.expires_at,
+            s.revoked_at,
+            s.one_time_use,
+            s.allow_guest_sign,
+            s.completion_count,
+            d.owner_wallet,
             d.hash_hex,
             d.version,
             d.mime_type,
@@ -3456,11 +3985,11 @@ async fn public_envelope_sign_handler(
             d.arweave_tx
         from document_shares s
         join documents d on d.id = s.doc_id
-        where s.access_token = $1
+        where s.access_token_hash = $1
           and d.is_deleted = false
         "#,
     )
-    .bind(token.trim())
+    .bind(&token_hash)
     .fetch_optional(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -3480,10 +4009,40 @@ async fn public_envelope_sign_handler(
     let envelope_id: uuid::Uuid = row.get("envelope_id");
     let hash_hex: String = row.get("hash_hex");
     let version: i32 = row.get("version");
+    let expires_at: Option<chrono::DateTime<chrono::Utc>> = row.get("expires_at");
+    let revoked_at: Option<chrono::DateTime<chrono::Utc>> = row.get("revoked_at");
+    let one_time_use: bool = row.get("one_time_use");
+    let completion_count: i32 = row.get("completion_count");
+    let owner_wallet: String = row.get("owner_wallet");
+    let policy = load_document_policy(&st.db, doc_id, &owner_wallet).await?;
+    let allow_guest_sign = row
+        .get::<Option<bool>, _>("allow_guest_sign")
+        .unwrap_or_else(|| policy.get("allow_guest_sign").and_then(|value| value.as_bool()).unwrap_or(false));
+    let guest_allowed = allow_guest_sign && public_guest_attestation_enabled();
+
+    if revoked_at.is_some() {
+        return Err(AppError::Forbidden("This share link has been revoked".into()));
+    }
+    if expires_at.map(|value| value <= chrono::Utc::now()).unwrap_or(false) {
+        return Err(AppError::Forbidden("This share link has expired".into()));
+    }
+    if one_time_use && completion_count > 0 {
+        return Err(AppError::Forbidden("This one-time share link has already been used".into()));
+    }
+    if row.get::<String, _>("status") == "completed" {
+        return Err(AppError::Forbidden("This envelope has already been completed".into()));
+    }
+
     let signature_type = body
         .signature_type
         .clone()
-        .unwrap_or_else(|| "guest_attestation".to_string());
+        .unwrap_or_else(|| {
+            if guest_allowed {
+                "guest_attestation".to_string()
+            } else {
+                "evm_personal_sign".to_string()
+            }
+        });
     let signer_identity = body
         .wallet_address
         .clone()
@@ -3571,6 +4130,10 @@ async fn public_envelope_sign_handler(
         _ => return Err(AppError::BadRequest("Unsupported signature_type".into())),
     };
 
+    if signature_type == "guest_attestation" && !guest_allowed {
+        return Err(AppError::Forbidden("Guest attestation is disabled for this envelope".into()));
+    }
+
     let annotation_json = json!({
         "annotation_text": body.annotation_text,
         "annotation_fields": annotation_fields,
@@ -3585,18 +4148,18 @@ async fn public_envelope_sign_handler(
             status = 'completed',
             signed_at = now(),
             completed_at = now(),
-            signer_name = $2,
-            signer_email = $3,
-            signer_title = $4,
-            signer_org = $5,
-            signer_wallet = $6,
-            sign_reason = $7,
-            annotation_json = $8,
-            completion_signature_type = $9
-        where access_token = $1
+            signer_name = $1,
+            signer_email = $2,
+            signer_title = $3,
+            signer_org = $4,
+            signer_wallet = $5,
+            sign_reason = $6,
+            annotation_json = $7,
+            completion_signature_type = $8,
+            completion_count = completion_count + 1
+        where access_token_hash = $9
         "#,
     )
-    .bind(token.trim())
     .bind(body.signer_name.trim())
     .bind(body.signer_email.as_deref())
     .bind(body.signer_title.as_deref())
@@ -3605,39 +4168,39 @@ async fn public_envelope_sign_handler(
     .bind(body.sign_reason.as_deref())
     .bind(&annotation_json)
     .bind(&signature_type)
+    .bind(&token_hash)
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    sqlx::query(
-        "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'ENVELOPE_COMPLETED',$3)",
+    insert_document_event(
+        &st.db,
+        doc_id,
+        &format!("guest-envelope:{envelope_id}"),
+        "ENVELOPE_COMPLETED",
+        public_custody_payload_for_envelope(
+            json!({
+                "envelope_id": envelope_id,
+                "hash_hex": hash_hex,
+                "version": version,
+                "mime_type": row.get::<String,_>("mime_type"),
+                "parent_id": row.get::<Option<uuid::Uuid>,_>("parent_id"),
+                "arweave_tx": row.get::<Option<String>,_>("arweave_tx"),
+                "signer_name": body.signer_name.trim(),
+                "signer_email": body.signer_email,
+                "signer_title": body.signer_title,
+                "signer_org": body.signer_org,
+                "signer_wallet": body.wallet_address,
+                "completion_signature_type": signature_type,
+                "annotation_json": annotation_json,
+                "signing_message": canonical_message,
+                "verification": verification
+            }),
+            envelope_id,
+            &headers,
+        ),
     )
-    .bind(doc_id)
-    .bind(format!("guest-envelope:{envelope_id}"))
-    .bind(public_custody_payload_for_envelope(
-        json!({
-            "envelope_id": envelope_id,
-            "hash_hex": hash_hex,
-            "version": version,
-            "mime_type": row.get::<String,_>("mime_type"),
-            "parent_id": row.get::<Option<uuid::Uuid>,_>("parent_id"),
-            "arweave_tx": row.get::<Option<String>,_>("arweave_tx"),
-            "signer_name": body.signer_name.trim(),
-            "signer_email": body.signer_email,
-            "signer_title": body.signer_title,
-            "signer_org": body.signer_org,
-            "signer_wallet": body.wallet_address,
-            "completion_signature_type": signature_type,
-            "annotation_json": annotation_json,
-            "signing_message": canonical_message,
-            "verification": verification
-        }),
-        envelope_id,
-        &headers,
-    ))
-    .execute(&st.db)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
 
     Ok(Json(json!({
         "ok": true,
@@ -3654,22 +4217,56 @@ async fn session_info_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let sess = require_session_from_headers(&st, &headers).await?;
+    let keys = load_or_create_server_mlkem_keypair(&st.db, &sess.wallet).await?;
+
+    Ok(Json(json!({
+        "active": true,
+        "session_id": sess.session_id,
+        "wallet": sess.wallet,
+        "chain": sess.chain,
+        "created_at": sess.created_at,
+        "expires_at": sess.expires_at,
+        "rotation_recommended": sess.rotation_recommended(),
+        "device_id": sess.device_id,
+        "user_agent": sess.user_agent,
+        "mlkem_pk_b64": keys.pk_b64
+    })))
+}
+
+async fn rotate_session_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
     let sid = headers
         .get("x-session-id")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::Auth("Missing session".into()))?;
 
-    let sess = st
+    let rotated = st
         .auth
-        .get_session(sid)
-        .ok_or_else(|| AppError::Auth("Invalid session".into()))?;
-    let keys = load_or_create_server_mlkem_keypair(&st.db, &sess.wallet).await?;
+        .rotate_session(
+            sid,
+            device_id_from_headers(&headers).as_deref(),
+            user_agent_from_headers(&headers).as_deref(),
+            ip_from_headers(&headers).as_deref(),
+        )
+        .await?
+        .ok_or_else(|| AppError::Auth("Invalid or expired session".into()))?;
+
+    let keys = load_or_create_server_mlkem_keypair(&st.db, &rotated.wallet).await?;
 
     Ok(Json(json!({
         "active": true,
-        "wallet": sess.wallet,
-        "chain": sess.chain,
-        "created_at": sess.created_at,
+        "rotated": true,
+        "session_id": rotated.session_id,
+        "wallet": rotated.wallet,
+        "chain": rotated.chain,
+        "created_at": rotated.created_at,
+        "expires_at": rotated.expires_at,
+        "rotation_recommended": false,
+        "device_id": rotated.device_id,
+        "user_agent": rotated.user_agent,
         "mlkem_pk_b64": keys.pk_b64
     })))
 }
@@ -3683,7 +4280,7 @@ async fn logout_handler(
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::Auth("Missing session".into()))?;
 
-    st.auth.revoke_session(sid);
+    st.auth.revoke_session(sid).await?;
 
     Ok(Json(json!({ "ok": true })))
 }
@@ -3758,7 +4355,7 @@ mod tests {
             Some("Signer Example"),
             Some("signer@example.com"),
             Some("+15555555555"),
-            Some("public-token-123"),
+            Some("public-token-hash-123"),
         );
 
         assert_eq!(payload["recipient_wallet"], "0xrecipient");
@@ -3768,7 +4365,7 @@ mod tests {
         assert_eq!(payload["signature"], "0xsig");
         assert_eq!(payload["recipient_email"], "signer@example.com");
         assert_eq!(payload["recipient_phone"], "+15555555555");
-        assert_eq!(payload["access_token"], "public-token-123");
+        assert_eq!(payload["access_token_hash"], "public-token-hash-123");
         assert_eq!(payload["envelope_id"], envelope_id.to_string());
     }
 

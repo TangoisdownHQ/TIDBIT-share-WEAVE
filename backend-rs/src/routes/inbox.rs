@@ -74,7 +74,7 @@ fn save_inbox(wallet: &str, items: &[InboxItem]) -> Result<(), AppError> {
 // HELPERS
 // ======================================================
 
-fn wallet_from_headers(
+async fn wallet_from_headers(
     st: &AuthState,
     headers: &axum::http::HeaderMap,
 ) -> Result<String, AppError> {
@@ -84,7 +84,8 @@ fn wallet_from_headers(
         .ok_or_else(|| AppError::Auth("missing x-session-id".into()))?;
 
     let sess = st
-        .get_session(sid)
+        .get_session(sid, None)
+        .await?
         .ok_or_else(|| AppError::Auth("invalid or expired session".into()))?;
 
     Ok(sess.wallet)
@@ -100,7 +101,7 @@ pub async fn share_envelope_v2(
     headers: axum::http::HeaderMap,
     Json(req): Json<ShareEnvelopeRequest>,
 ) -> Result<Json<InboxItem>, AppError> {
-    let from_wallet = wallet_from_headers(&st, &headers)?;
+    let from_wallet = wallet_from_headers(&st, &headers).await?;
     let now = chrono::Utc::now().timestamp();
 
     let item = InboxItem {
@@ -126,7 +127,7 @@ pub async fn list_inbox(
     State(st): State<AuthState>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<InboxListResponse>, AppError> {
-    let wallet = wallet_from_headers(&st, &headers)?;
+    let wallet = wallet_from_headers(&st, &headers).await?;
     let items = load_inbox(&wallet)?;
 
     Ok(Json(InboxListResponse { wallet, items }))
@@ -138,7 +139,7 @@ pub async fn accept_inbox_item(
     headers: axum::http::HeaderMap,
     Path(item_id): Path<String>,
 ) -> Result<Json<InboxItem>, AppError> {
-    let wallet = wallet_from_headers(&st, &headers)?;
+    let wallet = wallet_from_headers(&st, &headers).await?;
     let mut items = load_inbox(&wallet)?;
 
     let now = chrono::Utc::now().timestamp();
@@ -165,7 +166,7 @@ pub async fn reject_inbox_item(
     headers: axum::http::HeaderMap,
     Path(item_id): Path<String>,
 ) -> Result<Json<InboxItem>, AppError> {
-    let wallet = wallet_from_headers(&st, &headers)?;
+    let wallet = wallet_from_headers(&st, &headers).await?;
     let mut items = load_inbox(&wallet)?;
 
     let now = chrono::Utc::now().timestamp();

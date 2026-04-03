@@ -25,7 +25,8 @@ pub async fn share_envelope_v2(
         .ok_or_else(|| AppError::Auth("missing x-session-id".into()))?;
 
     let session = st
-        .get_session(sid)
+        .get_session(sid, None)
+        .await?
         .ok_or_else(|| AppError::Auth("invalid session".into()))?;
 
     record_share_event(session.wallet, req.to_wallet, req.envelope_id)?;

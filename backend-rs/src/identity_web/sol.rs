@@ -15,14 +15,16 @@ pub struct SolNonceResponse {
     pub message: String,
 }
 
-pub async fn sol_nonce_handler(State(st): State<AuthState>) -> Json<SolNonceResponse> {
-    let (session_id, nonce) = st.create_nonce();
+pub async fn sol_nonce_handler(
+    State(st): State<AuthState>,
+) -> Result<Json<SolNonceResponse>, AppError> {
+    let (session_id, nonce) = st.create_nonce().await?;
     let message = sol_login_message(&nonce);
-    Json(SolNonceResponse {
+    Ok(Json(SolNonceResponse {
         session_id,
         nonce,
         message,
-    })
+    }))
 }
 
 #[derive(Deserialize)]
@@ -58,13 +60,22 @@ pub async fn sol_verify_handler(
 
     let nonce = st
         .take_nonce(session_id)
+        .await?
         .ok_or_else(|| AppError::Auth("Unknown or expired session".into()))?;
     let message = sol_login_message(&nonce);
 
     verify_solana_signature(&message, address, signature)
         .map_err(|_| AppError::Auth("Invalid Solana signature".into()))?;
 
-    st.bind_wallet(session_id.to_string(), address.to_string(), "sol");
+    st.bind_wallet(
+        session_id.to_string(),
+        address.to_string(),
+        "sol",
+        None,
+        None,
+        None,
+    )
+    .await?;
 
     Ok(Json(AuthSuccess {
         address: address.to_string(),
