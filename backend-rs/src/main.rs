@@ -1789,12 +1789,14 @@ async fn list_shared_handler(
             s.recipient_name,
             s.recipient_email,
             s.recipient_phone,
+            s.note,
             s.status,
             s.delivery_json,
             s.expires_at,
             s.revoked_at,
             s.one_time_use,
             s.download_allowed,
+            s.allow_guest_sign,
             s.created_at,
             d.label,
             d.hash_hex,
@@ -1822,12 +1824,14 @@ async fn list_shared_handler(
                     "recipient_name": r.get::<Option<String>,_>("recipient_name"),
                     "recipient_email": r.get::<Option<String>,_>("recipient_email"),
                     "recipient_phone": r.get::<Option<String>,_>("recipient_phone"),
+                    "note": r.get::<Option<String>,_>("note"),
                     "status": r.get::<String,_>("status"),
                     "delivery_json": r.get::<serde_json::Value,_>("delivery_json"),
                     "expires_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("expires_at"),
                     "revoked_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("revoked_at"),
                     "one_time_use": r.get::<bool,_>("one_time_use"),
                     "download_allowed": r.get::<bool,_>("download_allowed"),
+                    "allow_guest_sign": r.get::<Option<bool>,_>("allow_guest_sign"),
                     "created_at": r.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
                     "label": r.get::<Option<String>,_>("label"),
                     "hash_hex": r.get::<String,_>("hash_hex"),
@@ -2098,7 +2102,7 @@ async fn export_doc_evidence_handler(
 
     let doc_row = sqlx::query(
         r#"
-        select id, owner_wallet, hash_hex, label, file_size, mime_type, storage_path, version, parent_id, arweave_tx, created_at
+        select id, owner_wallet, hash_hex, label, file_size, mime_type, storage_path, version, parent_id, arweave_tx, evidence_bundle_arweave_tx, created_at
              , (
                  select max(e.created_at)
                  from document_events e
@@ -2148,7 +2152,7 @@ async fn export_doc_evidence_handler(
 
     let events = sqlx::query(
         r#"
-        select id, event_type, actor_wallet, payload, created_at
+        select id, event_type, actor_wallet, payload, created_at, prev_event_hash_hex, event_hash_hex, event_hmac_b64
         from document_events
         where doc_id = $1
         order by created_at asc
@@ -2184,7 +2188,14 @@ async fn export_doc_evidence_handler(
             completion_signature_type,
             annotation_json,
             delivery_json,
-            access_token,
+            expires_at,
+            revoked_at,
+            revoked_reason,
+            one_time_use,
+            download_allowed,
+            allow_guest_sign,
+            open_count,
+            completion_count,
             created_at
         from document_shares
         where doc_id = $1
@@ -2196,7 +2207,69 @@ async fn export_doc_evidence_handler(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(Json(json!({
+    let mut previous_event_hash: Option<String> = None;
+    let mut event_chain_complete = true;
+    let mut event_chain_valid = true;
+    let mut event_hmac_covered = 0usize;
+    let exported_events = events
+        .into_iter()
+        .map(|row| {
+            let created_at = row.get::<chrono::DateTime<chrono::Utc>, _>("created_at");
+            let actor_wallet = row.get::<String, _>("actor_wallet");
+            let event_type = row.get::<String, _>("event_type");
+            let payload = row.get::<serde_json::Value, _>("payload");
+            let stored_prev_event_hash = row.get::<Option<String>, _>("prev_event_hash_hex");
+            let stored_event_hash = row.get::<Option<String>, _>("event_hash_hex");
+            let stored_event_hmac = row.get::<Option<String>, _>("event_hmac_b64");
+            let computed_event_hash = event_chain_hash_hex(
+                id,
+                &actor_wallet,
+                &event_type,
+                &payload,
+                created_at,
+                previous_event_hash.as_deref(),
+            )?;
+            let prev_hash_matches = stored_prev_event_hash == previous_event_hash;
+            let event_hash_matches = stored_event_hash
+                .as_deref()
+                .map(|value| value == computed_event_hash)
+                .unwrap_or(false);
+            let event_hmac_valid = match (&stored_event_hmac, sign_hmac_b64(computed_event_hash.as_bytes())) {
+                (Some(stored), Some(expected)) => {
+                    event_hmac_covered += 1;
+                    Some(stored == &expected)
+                }
+                (Some(_), None) => Some(false),
+                (None, _) => None,
+            };
+
+            if stored_event_hash.is_none() || stored_prev_event_hash.is_none() && previous_event_hash.is_some() {
+                event_chain_complete = false;
+            }
+            if !prev_hash_matches || !event_hash_matches || matches!(event_hmac_valid, Some(false)) {
+                event_chain_valid = false;
+            }
+
+            previous_event_hash = Some(computed_event_hash.clone());
+
+            Ok(json!({
+                "id": row.get::<uuid::Uuid,_>("id"),
+                "event_type": event_type,
+                "actor_wallet": actor_wallet,
+                "payload": payload,
+                "created_at": created_at,
+                "prev_event_hash_hex": stored_prev_event_hash,
+                "event_hash_hex": stored_event_hash,
+                "event_hmac_b64": stored_event_hmac,
+                "chain_link_valid": prev_hash_matches,
+                "event_hash_valid": event_hash_matches,
+                "event_hmac_valid": event_hmac_valid,
+                "computed_event_hash_hex": computed_event_hash
+            }))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+
+    let core_bundle = json!({
         "exported_at": chrono::Utc::now(),
         "requested_by": wallet,
         "document": {
@@ -2210,6 +2283,7 @@ async fn export_doc_evidence_handler(
             "version": doc_row.get::<i32,_>("version"),
             "parent_id": doc_row.get::<Option<uuid::Uuid>,_>("parent_id"),
             "arweave_tx": doc_row.get::<Option<String>,_>("arweave_tx"),
+            "evidence_bundle_arweave_tx": doc_row.get::<Option<String>,_>("evidence_bundle_arweave_tx"),
             "created_at": doc_row.get::<chrono::DateTime<chrono::Utc>,_>("created_at"),
             "last_signed_at": doc_row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("last_signed_at")
         },
@@ -2244,17 +2318,48 @@ async fn export_doc_evidence_handler(
             "completion_signature_type": row.get::<Option<String>,_>("completion_signature_type"),
             "annotation_json": row.get::<serde_json::Value,_>("annotation_json"),
             "delivery_json": row.get::<serde_json::Value,_>("delivery_json"),
-            "access_token_redacted": redact_token(row.get::<Option<String>,_>("access_token").as_deref()),
+            "expires_at": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("expires_at"),
+            "revoked_at": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("revoked_at"),
+            "revoked_reason": row.get::<Option<String>,_>("revoked_reason"),
+            "one_time_use": row.get::<bool,_>("one_time_use"),
+            "download_allowed": row.get::<bool,_>("download_allowed"),
+            "allow_guest_sign": row.get::<Option<bool>,_>("allow_guest_sign"),
+            "open_count": row.get::<i32,_>("open_count"),
+            "completion_count": row.get::<i32,_>("completion_count"),
             "created_at": row.get::<chrono::DateTime<chrono::Utc>,_>("created_at")
         })).collect::<Vec<_>>(),
-        "events": events.into_iter().map(|row| json!({
-            "id": row.get::<uuid::Uuid,_>("id"),
-            "event_type": row.get::<String,_>("event_type"),
-            "actor_wallet": row.get::<String,_>("actor_wallet"),
-            "payload": row.get::<serde_json::Value,_>("payload"),
-            "created_at": row.get::<chrono::DateTime<chrono::Utc>,_>("created_at")
-        })).collect::<Vec<_>>()
-    })))
+        "events": exported_events
+    });
+
+    let canonical_bundle = canonical_json(&core_bundle);
+    let bundle_hash_hex = hex::encode(pqc_sha3::sha3_256_bytes(&canonical_bundle));
+    let bundle_signature_b64 = sign_hmac_b64(bundle_hash_hex.as_bytes());
+
+    let events_total_count = core_bundle
+        .get("events")
+        .and_then(|value| value.as_array())
+        .map(|value| value.len())
+        .unwrap_or(0);
+    let mut export_json = match core_bundle {
+        serde_json::Value::Object(map) => map,
+        _ => unreachable!(),
+    };
+    export_json.insert(
+        "evidence_bundle".into(),
+        json!({
+            "schema_version": 2,
+            "bundle_hash_hex": bundle_hash_hex,
+            "bundle_signature_b64": bundle_signature_b64,
+            "bundle_signature_key_id": audit_key_id(),
+            "events_chain_complete": event_chain_complete,
+            "events_chain_valid": event_chain_valid,
+            "events_hmac_covered_count": event_hmac_covered,
+            "events_total_count": events_total_count,
+            "evidence_bundle_arweave_tx": doc_row.get::<Option<String>,_>("evidence_bundle_arweave_tx")
+        }),
+    );
+
+    Ok(Json(serde_json::Value::Object(export_json)))
 }
 
 async fn anchor_evidence_bundle_handler(
@@ -2287,24 +2392,23 @@ async fn anchor_evidence_bundle_handler(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    sqlx::query(
-        "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'EVIDENCE_ANCHORED',$3)",
+    insert_document_event(
+        &st.db,
+        id,
+        &wallet,
+        "EVIDENCE_ANCHORED",
+        custody_payload(
+            json!({
+                "evidence_hash_hex": evidence_hash_hex,
+                "arweave_tx": tx_id,
+                "document_hash_hex": doc.hash_hex,
+                "version": doc.version
+            }),
+            &session,
+            &headers,
+        ),
     )
-    .bind(id)
-    .bind(&wallet)
-    .bind(custody_payload(
-        json!({
-            "evidence_hash_hex": evidence_hash_hex,
-            "arweave_tx": tx_id,
-            "document_hash_hex": doc.hash_hex,
-            "version": doc.version
-        }),
-        &session,
-        &headers,
-    ))
-    .execute(&st.db)
-    .await
-    .map_err(|e| AppError::Internal(e.to_string()))?;
+    .await?;
 
     Ok(Json(json!({
         "ok": true,

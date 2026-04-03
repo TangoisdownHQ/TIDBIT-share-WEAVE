@@ -478,15 +478,37 @@ function createInboxCard(item) {
 function createSharedFileCard(item) {
   const card = createElement("div", { className: "inbox-card" });
   card.appendChild(createElement("h4", { text: item.label || "(shared document)" }));
-  card.appendChild(createMetaLine("Recipient", item.recipient_name || item.recipient_email || item.recipient_phone || item.recipient_wallet || "unknown"));
+  card.appendChild(createMetaLine("Recipient", shareRecipientLabel(item)));
   card.appendChild(createMetaLine("Network", item.recipient_chain || "n/a"));
   card.appendChild(createMetaLine("Status", item.status));
   card.appendChild(createMetaLine("Wallet route", item.recipient_wallet ? "yes" : "no"));
-  card.appendChild(createMetaLine("Delivery", Array.isArray(item.delivery_json) && item.delivery_json.length ? item.delivery_json.map((entry) => `${entry.channel}:${entry.status}`).join(", ") : "no provider delivery recorded"));
+  card.appendChild(createMetaLine("Delivery", shareDeliverySummary(item)));
+  card.appendChild(createMetaLine("Expires", item.expires_at ? new Date(item.expires_at).toLocaleString() : "server default"));
+  card.appendChild(createMetaLine("Guest signing", item.allow_guest_sign ? "allowed" : "wallet/PQ only"));
   card.appendChild(createMetaLine("Version", `v${item.version}`));
   card.appendChild(createMetaLine("Created", new Date(item.created_at).toLocaleString()));
   const actions = createElement("div", { className: "doc-actions" });
   actions.appendChild(createElement("a", { className: "button-link", href: `/document.html?id=${encodeURIComponent(item.doc_id)}`, text: "Open document" }));
+  const reissue = createElement("button", { text: "Reissue" });
+  reissue.onclick = () =>
+    openShareModal(
+      {
+        id: item.doc_id,
+        label: item.label,
+        hash_hex: item.hash_hex,
+        version: item.version,
+      },
+      item
+    );
+  actions.appendChild(reissue);
+  if (shareCanBeRevoked(item)) {
+    const revoke = createElement("button", { className: "button-danger", text: "Revoke" });
+    revoke.onclick = async () => {
+      await revokeShare(item.doc_id, item.envelope_id);
+      await refreshDashboardData();
+    };
+    actions.appendChild(revoke);
+  }
   card.appendChild(actions);
   return card;
 }
@@ -572,6 +594,31 @@ function friendlyEventLabel(eventType) {
 async function copyText(value, successMessage) {
   await navigator.clipboard.writeText(value);
   if (successMessage) alert(successMessage);
+}
+
+function shareRecipientLabel(share) {
+  return (
+    share.recipient_name ||
+    share.recipient_email ||
+    share.recipient_phone ||
+    share.recipient_wallet ||
+    "Recipient"
+  );
+}
+
+function shareCanBeRevoked(share) {
+  return !share.revoked_at && share.status !== "completed" && share.status !== "revoked";
+}
+
+function shareDeliverySummary(share) {
+  return Array.isArray(share.delivery_json) && share.delivery_json.length
+    ? share.delivery_json.map((entry) => `${entry.channel}:${entry.status}`).join(", ")
+    : "no provider delivery recorded";
+}
+
+async function revokeShare(docId, envelopeId) {
+  if (!window.confirm(`Revoke share ${envelopeId}? The current recipient link will stop working.`)) return;
+  await apiPost(`/api/doc/${encodeURIComponent(docId)}/share/${encodeURIComponent(envelopeId)}/revoke`, {});
 }
 
 async function rotateAgentToken(agent) {
@@ -1197,22 +1244,30 @@ async function registerAgent() {
 }
 
 // ================== SHARE ==================
-function prepareShare(doc) {
+function prepareShare(doc, seedShare = null) {
   selectedShareDoc = doc;
-  ["modalRecipientName", "modalRecipientWallet", "modalRecipientEmail", "modalRecipientPhone", "modalAgentHandle", "modalShareNote"].forEach((id) => {
+  const fieldValues = {
+    modalRecipientName: seedShare?.recipient_name || "",
+    modalRecipientWallet: seedShare?.recipient_wallet || "",
+    modalRecipientEmail: seedShare?.recipient_email || "",
+    modalRecipientPhone: seedShare?.recipient_phone || "",
+    modalAgentHandle: "",
+    modalShareNote: seedShare?.note || "",
+  };
+  Object.entries(fieldValues).forEach(([id, value]) => {
     const el = document.getElementById(id);
-    if (el) el.value = "";
+    if (el) el.value = value;
   });
   const expiry = document.getElementById("modalShareExpiresHours");
-  if (expiry) expiry.value = "168";
+  if (expiry) expiry.value = seedShare?.expires_at ? Math.max(1, Math.ceil((new Date(seedShare.expires_at).getTime() - Date.now()) / 3600000)).toString() : "168";
   const oneTime = document.getElementById("modalShareOneTimeUse");
-  if (oneTime) oneTime.checked = false;
+  if (oneTime) oneTime.checked = Boolean(seedShare?.one_time_use);
   const downloadAllowed = document.getElementById("modalDownloadAllowed");
-  if (downloadAllowed) downloadAllowed.checked = true;
+  if (downloadAllowed) downloadAllowed.checked = seedShare?.download_allowed ?? true;
   const allowGuestSign = document.getElementById("modalAllowGuestSign");
-  if (allowGuestSign) allowGuestSign.checked = false;
+  if (allowGuestSign) allowGuestSign.checked = Boolean(seedShare?.allow_guest_sign);
   const recipientChain = document.getElementById("modalRecipientChain");
-  if (recipientChain) recipientChain.value = currentChain === "sol" ? "sol" : "evm";
+  if (recipientChain) recipientChain.value = seedShare?.recipient_chain || (currentChain === "sol" ? "sol" : "evm");
   const stateRoot = document.getElementById("shareModalState");
   if (!stateRoot) return;
   setContent(
@@ -1224,12 +1279,14 @@ function prepareShare(doc) {
     ])
   );
   const title = document.getElementById("shareModalTitle");
-  if (title) title.textContent = `Create signing link for ${doc.label || "document"}`;
-  document.getElementById("shareResult").innerText = "Ready to create a signing link.";
+  if (title) title.textContent = seedShare ? `Reissue signing link for ${doc.label || "document"}` : `Create signing link for ${doc.label || "document"}`;
+  document.getElementById("shareResult").innerText = seedShare
+    ? "Share fields restored from the earlier envelope. Create a replacement link when ready."
+    : "Ready to create a signing link.";
 }
 
-function openShareModal(doc) {
-  prepareShare(doc);
+function openShareModal(doc, seedShare = null) {
+  prepareShare(doc, seedShare);
   const modal = document.getElementById("shareModal");
   if (!modal) return;
   modal.classList.remove("hidden");
@@ -1645,14 +1702,39 @@ function renderShareCards(shares) {
   shares.forEach((share) => {
     const article = createElement("article", { className: "event-card compact-card" });
     const top = createElement("div", { className: "event-top" });
-    top.appendChild(createElement("strong", { text: share.recipient_name || share.recipient_email || share.recipient_phone || share.recipient_wallet || "Recipient" }));
+    top.appendChild(createElement("strong", { text: shareRecipientLabel(share) }));
     top.appendChild(createElement("span", { className: "muted", text: share.status }));
     article.appendChild(top);
     article.appendChild(createMetaLine("Envelope", share.envelope_id, { className: "event-meta" }));
     article.appendChild(createMetaLine("Wallet", share.recipient_wallet || "not provided", { className: "event-meta" }));
     article.appendChild(createMetaLine("Email", share.recipient_email || "not provided", { className: "event-meta" }));
     article.appendChild(createMetaLine("Phone", share.recipient_phone || "not provided", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Delivery", shareDeliverySummary(share), { className: "event-meta" }));
+    article.appendChild(createMetaLine("Expires", share.expires_at ? new Date(share.expires_at).toLocaleString() : "server default", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Viewed", share.viewed_at ? new Date(share.viewed_at).toLocaleString() : "not yet", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Completed", share.completed_at ? new Date(share.completed_at).toLocaleString() : "not yet", { className: "event-meta" }));
+    article.appendChild(createMetaLine("One-time use", share.one_time_use ? "yes" : "no", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Downloads", share.download_allowed ? "allowed" : "preview only", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Guest signing", share.allow_guest_sign ? "allowed" : "disabled", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Signer", share.signer_name || share.signer_wallet || "not completed", { className: "event-meta" }));
+    article.appendChild(createMetaLine("Signature type", share.completion_signature_type || "not completed", { className: "event-meta" }));
+    if (share.revoked_at) {
+      article.appendChild(createMetaLine("Revoked", new Date(share.revoked_at).toLocaleString(), { className: "event-meta", important: true }));
+    }
     article.appendChild(createMetaLine("Created", new Date(share.created_at).toLocaleString(), { className: "event-meta" }));
+    const actions = createElement("div", { className: "doc-actions" });
+    const reissue = createElement("button", { text: "Reissue" });
+    reissue.onclick = () => openShareModal(currentDocumentDetails, share);
+    actions.appendChild(reissue);
+    if (shareCanBeRevoked(share)) {
+      const revoke = createElement("button", { className: "button-danger", text: "Revoke" });
+      revoke.onclick = async () => {
+        await revokeShare(currentDocumentDetails.id, share.envelope_id);
+        await loadDocumentDetailsPage();
+      };
+      actions.appendChild(revoke);
+    }
+    article.appendChild(actions);
     fragment.appendChild(article);
   });
   return fragment;
@@ -1951,7 +2033,25 @@ async function loadDocumentDetailsPage() {
     createMetaLine("Owner", evidence.document?.owner_wallet || ""),
     createMetaLine("Created", new Date(evidence.document?.created_at).toLocaleString()),
     createMetaLine("Last signed", evidence.document?.last_signed_at ? new Date(evidence.document.last_signed_at).toLocaleString() : "not signed yet"),
-    createMetaLine("Arweave", currentDocumentDetails.arweave_tx || "not anchored")
+    createMetaLine("Arweave", currentDocumentDetails.arweave_tx || "not anchored"),
+    createMetaLine(
+      "Evidence chain",
+      evidence.evidence_bundle?.events_chain_valid
+        ? "valid"
+        : evidence.evidence_bundle?.events_chain_complete
+          ? "invalid"
+          : "partial coverage"
+    ),
+    createMetaLine(
+      "Evidence bundle",
+      evidence.evidence_bundle?.bundle_hash_hex
+        ? `${String(evidence.evidence_bundle.bundle_hash_hex).slice(0, 24)}…`
+        : "not generated"
+    ),
+    createMetaLine(
+      "Evidence anchor",
+      evidence.evidence_bundle?.evidence_bundle_arweave_tx || "not anchored"
+    )
   );
   setContent(previewRoot, renderPreviewNode(blob, currentDocumentDetails.mime_type || "application/octet-stream"));
   setContent(lineageRoot, renderLineageCards(evidence.lineage || []));
