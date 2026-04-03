@@ -2,6 +2,8 @@
 
 This documentation set explains what the app does, how the backend and frontend fit together, how users move through the product, and where the current security and dependency audit stands.
 
+This documentation set currently tracks production release `1.0.0`.
+
 ## Documentation Map
 
 - [User Guide](./user-guide.md)

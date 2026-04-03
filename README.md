@@ -14,6 +14,8 @@
 
 Quantum-Resistant, Zero-Trust File Custody & Sharing
 
+Current production release line: `1.0.0`
+
 TIDBIT-share-WEAVE is a decentralized, post-quantum-resilient file creation, versioning, review, signing, and sharing system designed for zero-trust environments, long-term data integrity, and wallet-native identity.
 
 It provides cryptographically verifiable chain-of-custody for files, ensuring confidentiality, authenticity, and auditability even under future quantum threat models.
