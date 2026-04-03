@@ -196,6 +196,8 @@ That is different from EVM and Solana signatures:
 - EVM and Solana are practical wallet flows
 - ML-DSA is the post-quantum signature path
 
+In the current web application, ML-DSA is no longer just a manual proof format. Review and public-envelope flows can now generate and use the ML-DSA key locally inside the browser, then send the public key and signature proof to the backend for verification and evidence recording.
+
 ## Where Arweave Fits
 
 Arweave is not the primary live file store.
@@ -223,7 +225,7 @@ If you are reviewing the system, the most important things to verify are:
 
 The product is materially stronger than a basic share-and-sign app, but these boundaries still matter:
 
-- browser-side PQ encryption is not yet the default web path
+- browser-local PQ signing is available, but browser-side PQ encryption is not yet the default web path
 - Arweave anchoring is optional
 - on-chain attestation is not the default signature model
 - billing and provider delivery are not fully production-complete

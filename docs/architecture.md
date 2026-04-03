@@ -137,12 +137,14 @@ That is the core review integrity check.
 ### Sign Flow
 
 1. Frontend builds a canonical signing message.
-2. Wallet signs using EVM or Solana flow, or PQ data is supplied.
+2. Wallet signs using EVM or Solana flow, or the browser-local ML-DSA signer signs locally.
 3. Backend verifies the signature type.
 4. Backend writes a `SIGN` event into `document_events`.
 5. Frontend refreshes timeline and document state.
 
 The important boundary here is that signing is not accepted just because a client says "signed." The backend verifies the signature against the canonical message first.
+
+For the current PQ web path, the browser bundles a WASM-backed ML-DSA signer. The private key stays in the browser-local storage model unless the user explicitly exports it.
 
 ### Share Flow
 
@@ -176,6 +178,26 @@ A document is visible if:
 This is important because shared documents are not copied into a separate workspace store. Both sender and recipient interact with the same document ledger by `doc_id`.
 
 That is also why recipient actions should be visible on the same custody timeline as sender actions.
+
+## Session Model
+
+Wallet login creates a durable server-side session record in `wallet_sessions`.
+
+Important current behavior:
+
+- sessions are checked against a browser/device id
+- session rotation is supported
+- explicit session revocation is supported
+- a new successful login revokes older active sessions for the same wallet
+
+That means the app now behaves more like a controlled wallet workspace than an unlimited multi-device session pool.
+
+The dashboard exposes recent session history so users can inspect:
+
+- current session
+- other active sessions
+- revoked sessions
+- revoke reasons and timestamps
 
 ## Shared Activity Model
 
@@ -231,16 +253,18 @@ That is why the current Rust audit state is now clean.
 ### Strong Points
 
 - wallet-based identity
+- automatic revocation of older wallet sessions on new login
+- session history and user-driven revoke controls
 - custody event logging
 - Solana and EVM signature verification
-- optional PQ signature verification
+- browser-local ML-DSA signing with backend verification
 - version lineage
 - evidence export
 - clean Rust dependency audit at the current checkpoint
 
 ### Current Boundaries
 
-- browser-side PQ encryption/signing is not the default web path yet
+- browser-local PQ signing is available, but browser-side PQ encryption is not the default web path yet
 - object storage is still backed by Supabase
 - on-chain attestation is not the default signature model
 - billing enforcement is not production-complete
