@@ -127,13 +127,13 @@ Current state includes:
 
 Still in progress:
 
-- Browser-side PQ crypto generation/signing
+- Browser-side PQ encryption, org-managed PQ custody, and crypto-agility
 - Full production billing enforcement and checkout
 - Office-class collaborative editing
 
 ## 🗺️ Roadmap
 
-- End-to-end browser-side PQ encryption/signing
+- End-to-end browser-side PQ encryption and managed-key lifecycle
 - Provider-backed email and SMS delivery
 - Wallet-native recipient notification and acceptance flows
 - Human and AI agent policy routing

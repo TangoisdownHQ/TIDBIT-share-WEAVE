@@ -12,6 +12,10 @@ let activeFieldTool = null;
 let currentDocumentDetails = null;
 let ownedDocumentsCache = [];
 let agentsCache = [];
+let pqWorkerPromise = null;
+
+const PQ_KEY_STORAGE = "TIDBIT_PQ_MLDSA65_KEYPAIR_V1";
+const PQ_BACKUP_VERSION = 1;
 
 // ================== SESSION ==================
 function saveSessionId(sid) {
@@ -78,6 +82,208 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode(value);
   });
   return btoa(binary);
+}
+
+function base64ToBytes(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function utf8ToBase64(value) {
+  return bytesToBase64(new TextEncoder().encode(value));
+}
+
+function randomBytes(len) {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function randomBase64(len) {
+  return bytesToBase64(randomBytes(len));
+}
+
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function pqKeyFingerprint(publicKeyB64) {
+  const digest = await sha256Hex(base64ToBytes(publicKeyB64));
+  return digest.slice(0, 16);
+}
+
+function loadStoredPqKeypair() {
+  try {
+    const raw = localStorage.getItem(PQ_KEY_STORAGE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      parsed?.algorithm !== "pq_mldsa65" ||
+      typeof parsed?.public_key_b64 !== "string" ||
+      typeof parsed?.secret_key_b64 !== "string"
+    ) {
+      return null;
+    }
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveStoredPqKeypair(keypair) {
+  localStorage.setItem(PQ_KEY_STORAGE, JSON.stringify(keypair));
+}
+
+function clearStoredPqKeypair() {
+  localStorage.removeItem(PQ_KEY_STORAGE);
+}
+
+async function getPqWorker() {
+  if (pqWorkerPromise) return pqWorkerPromise;
+
+  pqWorkerPromise = new Promise((resolve, reject) => {
+    const worker = new Worker("/pq-worker.js");
+    let nextRequestId = 1;
+    const pending = new Map();
+
+    worker.onmessage = (event) => {
+      const { id, ok, result, error } = event.data || {};
+      const handler = pending.get(id);
+      if (!handler) return;
+      pending.delete(id);
+      if (ok) handler.resolve(result);
+      else handler.reject(new Error(error || "PQ worker request failed"));
+    };
+
+    worker.onerror = (event) => {
+      reject(new Error(event.message || "PQ worker failed to start"));
+    };
+
+    worker.call = (action, payload = {}) =>
+      new Promise((resolveCall, rejectCall) => {
+        const id = nextRequestId;
+        nextRequestId += 1;
+        pending.set(id, { resolve: resolveCall, reject: rejectCall });
+        worker.postMessage({ id, action, payload });
+      });
+
+    worker
+      .call("init")
+      .then(() => resolve(worker))
+      .catch(reject);
+  });
+
+  return pqWorkerPromise;
+}
+
+async function callPqWorker(action, payload = {}) {
+  const worker = await getPqWorker();
+  return worker.call(action, payload);
+}
+
+async function generateBrowserPqKeypair() {
+  const generated = await callPqWorker("generateKeypair", {
+    seed_b64: randomBase64(32),
+  });
+  const keypair = {
+    algorithm: "pq_mldsa65",
+    version: PQ_BACKUP_VERSION,
+    created_at: new Date().toISOString(),
+    public_key_b64: generated.public_key_b64,
+    secret_key_b64: generated.secret_key_b64,
+  };
+  saveStoredPqKeypair(keypair);
+  return keypair;
+}
+
+async function signWithStoredPqKey(message) {
+  const keypair = loadStoredPqKeypair();
+  if (!keypair) {
+    throw new Error("No device-local ML-DSA key is available.");
+  }
+
+  const signed = await callPqWorker("signMessage", {
+    secret_key_b64: keypair.secret_key_b64,
+    message_b64: utf8ToBase64(message),
+    signing_seed_b64: randomBase64(32),
+  });
+  const verified = await callPqWorker("verifySignature", {
+    public_key_b64: keypair.public_key_b64,
+    message_b64: utf8ToBase64(message),
+    signature_b64: signed.signature_b64,
+  });
+
+  if (!verified?.verified) {
+    throw new Error("Local PQ signature self-check failed.");
+  }
+
+  return {
+    signature_type: "pq_mldsa65",
+    pq_public_key_b64: keypair.public_key_b64,
+    signature: signed.signature_b64,
+  };
+}
+
+function buildPqBackupPayload(keypair) {
+  return {
+    type: "tidbit_pq_key_backup",
+    version: PQ_BACKUP_VERSION,
+    algorithm: "pq_mldsa65",
+    created_at: keypair.created_at || new Date().toISOString(),
+    public_key_b64: keypair.public_key_b64,
+    secret_key_b64: keypair.secret_key_b64,
+  };
+}
+
+async function exportStoredPqKeypair() {
+  const keypair = loadStoredPqKeypair();
+  if (!keypair) {
+    throw new Error("No device-local ML-DSA key is available.");
+  }
+  const fingerprint = await pqKeyFingerprint(keypair.public_key_b64);
+  downloadJsonFile(`tidbit-pq-mldsa65-${fingerprint}.json`, buildPqBackupPayload(keypair));
+}
+
+async function importStoredPqKeypair(file) {
+  const text = await file.text();
+  const parsed = JSON.parse(text);
+  if (
+    parsed?.algorithm !== "pq_mldsa65" ||
+    typeof parsed?.public_key_b64 !== "string" ||
+    typeof parsed?.secret_key_b64 !== "string"
+  ) {
+    throw new Error("Unsupported PQ backup file.");
+  }
+
+  const challenge = `TIDBIT PQ Import Check\nTimestamp: ${new Date().toISOString()}`;
+  const signed = await callPqWorker("signMessage", {
+    secret_key_b64: parsed.secret_key_b64,
+    message_b64: utf8ToBase64(challenge),
+    signing_seed_b64: randomBase64(32),
+  });
+  const verified = await callPqWorker("verifySignature", {
+    public_key_b64: parsed.public_key_b64,
+    message_b64: utf8ToBase64(challenge),
+    signature_b64: signed.signature_b64,
+  });
+  if (!verified?.verified) {
+    throw new Error("The imported ML-DSA backup failed verification.");
+  }
+
+  saveStoredPqKeypair({
+    algorithm: "pq_mldsa65",
+    version: parsed.version || PQ_BACKUP_VERSION,
+    created_at: parsed.created_at || new Date().toISOString(),
+    public_key_b64: parsed.public_key_b64,
+    secret_key_b64: parsed.secret_key_b64,
+  });
 }
 
 async function signTextWithActiveWallet(message) {
@@ -870,21 +1076,26 @@ async function signDocument(doc) {
     (currentChain === "sol" ? "sol_ed25519" : "evm_personal_sign");
 
   if (signatureMode === "pq_mldsa65") {
-    const pqPublicKey = document.getElementById("pqPublicKey")?.value.trim();
-    const pqSignature = document.getElementById("pqSignature")?.value.trim();
-
-    if (!pqPublicKey || !pqSignature) {
-      alert("PQ public key and signed message are required.");
+    let signed;
+    try {
+      signed = await signWithStoredPqKey(message);
+    } catch (error) {
+      alert(`${error.message} Generate or import a browser-local PQ key first.`);
       return;
     }
+    const pqPublicKey = document.getElementById("pqPublicKey");
+    const pqSignature = document.getElementById("pqSignature");
+    if (pqPublicKey) pqPublicKey.value = signed.pq_public_key_b64;
+    if (pqSignature) pqSignature.value = signed.signature;
 
     await apiPost(`/api/doc/${doc.id}/sign`, {
-      signature: pqSignature,
+      signature: signed.signature,
       signature_type: "pq_mldsa65",
-      pq_public_key_b64: pqPublicKey,
+      pq_public_key_b64: signed.pq_public_key_b64,
     });
     await afterDocumentSigned(doc.id);
-    alert("PQ signature verified and recorded");
+    await refreshAllPqStatus({ clearSignature: false });
+    alert("Browser-local PQ signature verified and recorded");
     return;
   }
 
@@ -1567,6 +1778,122 @@ function openReview(docId) {
   window.location.href = `/review.html?id=${encodeURIComponent(docId)}`;
 }
 
+function getReviewPqConfig() {
+  return {
+    statusId: "pqDeviceStatus",
+    publicKeyId: "pqPublicKey",
+    signatureId: "pqSignature",
+    generateBtnId: "pqGenerateKeyBtn",
+    exportBtnId: "pqExportKeyBtn",
+    importBtnId: "pqImportKeyBtn",
+    clearBtnId: "pqClearKeyBtn",
+    importInputId: "pqImportFile",
+  };
+}
+
+function getPublicPqConfig() {
+  return {
+    statusId: "publicPqDeviceStatus",
+    publicKeyId: "publicPqPublicKey",
+    signatureId: "publicPqSignature",
+    generateBtnId: "publicPqGenerateKeyBtn",
+    exportBtnId: "publicPqExportKeyBtn",
+    importBtnId: "publicPqImportKeyBtn",
+    clearBtnId: "publicPqClearKeyBtn",
+    importInputId: "publicPqImportFile",
+  };
+}
+
+async function renderPqStatus(config, { clearSignature = true } = {}) {
+  const statusRoot = document.getElementById(config.statusId);
+  const publicKeyField = document.getElementById(config.publicKeyId);
+  const signatureField = document.getElementById(config.signatureId);
+  const exportBtn = document.getElementById(config.exportBtnId);
+  const clearBtn = document.getElementById(config.clearBtnId);
+  const keypair = loadStoredPqKeypair();
+
+  if (publicKeyField) {
+    publicKeyField.value = keypair?.public_key_b64 || "";
+  }
+  if (signatureField && clearSignature) {
+    signatureField.value = "";
+  }
+  if (exportBtn) exportBtn.disabled = !keypair;
+  if (clearBtn) clearBtn.disabled = !keypair;
+
+  if (!statusRoot) return;
+
+  if (!keypair) {
+    statusRoot.textContent =
+      "No browser-local ML-DSA key is loaded on this device. Generate one here or import a backup before choosing the PQ signing mode.";
+    return;
+  }
+
+  const fingerprint = await pqKeyFingerprint(keypair.public_key_b64);
+  setContent(
+    statusRoot,
+    createMetaLine("Signer", "Browser-local ML-DSA-65"),
+    createMetaLine("Fingerprint", fingerprint),
+    createMetaLine("Stored", keypair.created_at ? new Date(keypair.created_at).toLocaleString() : "this browser"),
+    createMetaLine("Public key", `${keypair.public_key_b64.slice(0, 24)}…`)
+  );
+}
+
+async function refreshAllPqStatus(options = {}) {
+  if (document.getElementById("pqDeviceStatus")) {
+    await renderPqStatus(getReviewPqConfig(), options);
+  }
+  if (document.getElementById("publicPqDeviceStatus")) {
+    await renderPqStatus(getPublicPqConfig(), options);
+  }
+}
+
+function bindPqControls(config) {
+  const generateBtn = document.getElementById(config.generateBtnId);
+  const exportBtn = document.getElementById(config.exportBtnId);
+  const importBtn = document.getElementById(config.importBtnId);
+  const clearBtn = document.getElementById(config.clearBtnId);
+  const importInput = document.getElementById(config.importInputId);
+
+  generateBtn?.addEventListener("click", async () => {
+    try {
+      await generateBrowserPqKeypair();
+      await refreshAllPqStatus();
+      alert("Browser-local ML-DSA key generated.");
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  exportBtn?.addEventListener("click", async () => {
+    try {
+      await exportStoredPqKeypair();
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  importBtn?.addEventListener("click", () => importInput?.click());
+  importInput?.addEventListener("change", async (event) => {
+    const [file] = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!file) return;
+    try {
+      await importStoredPqKeypair(file);
+      await refreshAllPqStatus();
+      alert("Browser-local ML-DSA backup imported.");
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+
+  clearBtn?.addEventListener("click", async () => {
+    if (!confirm("Remove the browser-local ML-DSA key from this device?")) return;
+    clearStoredPqKeypair();
+    await refreshAllPqStatus();
+  });
+}
+
 function toggleSignatureMode() {
   const mode = document.getElementById("signatureMode")?.value;
   const pqFields = document.getElementById("pqFields");
@@ -1983,6 +2310,7 @@ async function loadReviewPage() {
     historyLink.href = `/document.html?id=${encodeURIComponent(id)}`;
     document.getElementById("reviewDetailLink").href = `/document.html?id=${encodeURIComponent(id)}`;
     toggleSignatureMode();
+    await renderPqStatus(getReviewPqConfig());
   } catch (err) {
     console.error(err);
     setContent(previewRoot, createMessageCard("preview-fallback", "Preview failed.", err?.message || "Unexpected error"));
@@ -2194,6 +2522,7 @@ async function loadPublicSignPage() {
     configurePublicSignatureModes(envelope);
     document.getElementById("publicSignSubmit").disabled = !verified;
     togglePublicSignatureMode();
+    await renderPqStatus(getPublicPqConfig());
   } catch (err) {
     setContent(previewRoot, createMessageCard("preview-fallback", "Envelope unavailable.", err?.message || "Unexpected error"));
   }
@@ -2274,12 +2603,24 @@ async function submitPublicEnvelopeSign() {
   }
 
   if (signatureType === "pq_mldsa65") {
-    payload.pq_public_key_b64 = document.getElementById("publicPqPublicKey").value.trim();
-    payload.signature = document.getElementById("publicPqSignature").value.trim();
-    if (!payload.pq_public_key_b64 || !payload.signature) {
-      alert("PQ public key and signature are required.");
+    let signed;
+    try {
+      signed = await signWithStoredPqKey(
+        `TIDBIT Public Envelope Signature\n` +
+        `Envelope ID: ${window.publicEnvelope.envelope_id}\n` +
+        `Document ID: ${window.publicEnvelope.doc_id}\n` +
+        `Hash: ${window.publicEnvelope.hash_hex}\n` +
+        `Signer: ${signerName}\n` +
+        `Version: ${window.publicEnvelope.version}`
+      );
+    } catch (error) {
+      alert(`${error.message} Generate or import a browser-local PQ key first.`);
       return;
     }
+    payload.pq_public_key_b64 = signed.pq_public_key_b64;
+    payload.signature = signed.signature;
+    document.getElementById("publicPqPublicKey").value = signed.pq_public_key_b64;
+    document.getElementById("publicPqSignature").value = signed.signature;
   }
 
   await apiPublicPost(`/api/public/envelope/${encodeURIComponent(token)}/sign`, payload);
@@ -2351,6 +2692,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (document.getElementById("reviewPreview")) {
     loadSessionInfo();
     loadReviewPage();
+    bindPqControls(getReviewPqConfig());
     document.getElementById("signatureMode")?.addEventListener("change", (event) => {
       event.currentTarget.dataset.userSelected = "true";
       toggleSignatureMode();
@@ -2381,6 +2723,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (document.getElementById("publicEnvelopePreview")) {
     loadPublicSignPage();
+    bindPqControls(getPublicPqConfig());
     document
       .getElementById("publicSignatureMode")
       ?.addEventListener("change", (event) => {
