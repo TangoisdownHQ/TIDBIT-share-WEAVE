@@ -25,7 +25,6 @@ use axum::{Json, Router};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
 use clap::Parser;
 use cli::commands::{auth, c2c as cli_c2c, doc, wallet};
 use cli::parser::{Cli, Commands};
@@ -37,6 +36,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::error::AppError;
 use crate::identity_web::evm::{evm_login_message, verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
+use crate::identity_web::sol::verify_solana_signature;
 use crate::identity_web::state::WalletSession;
 use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
 use crate::crypto::aes_gcm;
@@ -271,40 +271,6 @@ fn normalize_wallet_for_chain(wallet: &str, chain: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-fn decode_signature_blob(signature: &str) -> Result<Vec<u8>, AppError> {
-    base64::engine::general_purpose::STANDARD
-        .decode(signature.trim())
-        .or_else(|_| bs58::decode(signature.trim()).into_vec())
-        .map_err(|_| AppError::BadRequest("Invalid signature encoding".into()))
-}
-
-fn verify_solana_signature(
-    message: &str,
-    wallet_address: &str,
-    signature: &str,
-) -> Result<(), AppError> {
-    let public_key_bytes = bs58::decode(wallet_address.trim())
-        .into_vec()
-        .map_err(|_| AppError::BadRequest("Invalid Solana wallet address".into()))?;
-    let public_key_array: [u8; 32] = public_key_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| AppError::BadRequest("Invalid Solana wallet address length".into()))?;
-    let verifying_key = VerifyingKey::from_bytes(&public_key_array)
-        .map_err(|_| AppError::BadRequest("Invalid Solana public key".into()))?;
-
-    let signature_bytes = decode_signature_blob(signature)?;
-    let signature_array: [u8; 64] = signature_bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| AppError::BadRequest("Invalid Solana signature length".into()))?;
-    let parsed_signature = Ed25519Signature::from_bytes(&signature_array);
-
-    verifying_key
-        .verify(message.as_bytes(), &parsed_signature)
-        .map_err(|_| AppError::BadRequest("Invalid Solana signature".into()))
 }
 
 async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
@@ -1342,9 +1308,7 @@ async fn sol_verify_handler_app(
     State(st): State<AppState>,
     Json(body): Json<identity_web::sol::SolVerifyRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let res = identity_web::sol::sol_verify_handler(State(st.auth.clone()), Json(body))
-        .await
-        .map_err(|(_, message)| AppError::Auth(message))?;
+    let res = identity_web::sol::sol_verify_handler(State(st.auth.clone()), Json(body)).await?;
 
     let keys = load_or_create_server_mlkem_keypair(&st.db, &res.address).await?;
 

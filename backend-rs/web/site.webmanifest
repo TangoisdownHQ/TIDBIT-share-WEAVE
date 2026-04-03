@@ -1,0 +1,16 @@
+{
+  "name": "TIDBIT-share-WEAVE",
+  "short_name": "TIDBIT",
+  "description": "Wallet-native document custody with evidence export and post-quantum aligned ML-KEM and ML-DSA paths.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09162b",
+  "theme_color": "#09162b",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "1536x1024",
+      "type": "image/png"
+    }
+  ]
+}

@@ -4,6 +4,15 @@
     <title>TIDBIT – LOGIN</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="TIDBIT-share-WEAVE is a wallet-native document custody workspace with audit trails, evidence export, and post-quantum aligned ML-KEM and ML-DSA paths." />
+    <meta name="theme-color" content="#09162b" />
+    <meta property="og:title" content="TIDBIT-share-WEAVE" />
+    <meta property="og:description" content="Wallet-native document custody with review, sharing, signatures, evidence export, and post-quantum aligned storage and signing paths." />
+    <meta property="og:image" content="/logo.png" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <link rel="manifest" href="/site.webmanifest" />
     <script src="app.js" defer></script>
     <link rel="stylesheet" href="/style.css">
 </head>
@@ -19,8 +28,11 @@
             <div class="landing-points">
                 <span>Post-quantum aligned</span>
                 <span>Signed custody events</span>
-                <span>Supabase storage + Postgres index</span>
+                <span>ML-KEM + ML-DSA path</span>
             </div>
+            <p class="muted">
+                PQC support is part of the product surface: custody uses a post-quantum envelope model and review flows can record ML-DSA signatures for high-assurance verification.
+            </p>
 
             <div class="auth-login-row">
                 <select id="walletProvider" aria-label="Wallet provider">
