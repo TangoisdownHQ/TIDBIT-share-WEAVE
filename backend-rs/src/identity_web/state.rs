@@ -36,6 +36,22 @@ impl WalletSession {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct WalletSessionRecord {
+    pub session_id: String,
+    pub wallet: String,
+    pub chain: String,
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
+    pub revoked_reason: Option<String>,
+    pub replaced_by_session_id: Option<String>,
+    pub device_id: Option<String>,
+    pub user_agent: Option<String>,
+    pub ip_address: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct AuthState {
     db: PgPool,
@@ -156,6 +172,8 @@ impl AuthState {
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
+        self.revoke_other_wallet_sessions(&wallet, &session_id).await?;
+
         Ok(WalletSession {
             session_id,
             wallet,
@@ -239,6 +257,110 @@ impl AuthState {
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(())
+    }
+
+    pub async fn revoke_other_wallet_sessions(
+        &self,
+        wallet: &str,
+        keep_session_id: &str,
+    ) -> Result<u64, AppError> {
+        let result = crate::sqlx::query(
+            r#"
+            update wallet_sessions
+            set revoked_at = now(),
+                revoked_reason = 'superseded_by_new_login',
+                replaced_by_session_id = $3
+            where wallet = $1
+              and session_id <> $2
+              and revoked_at is null
+              and expires_at > now()
+            "#,
+        )
+        .bind(wallet.trim())
+        .bind(keep_session_id.trim())
+        .bind(keep_session_id.trim())
+        .execute(&self.db)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn list_wallet_sessions(
+        &self,
+        wallet: &str,
+        limit: i64,
+    ) -> Result<Vec<WalletSessionRecord>, AppError> {
+        let rows = crate::sqlx::query(
+            r#"
+            select
+                session_id,
+                wallet,
+                chain,
+                extract(epoch from created_at)::bigint as created_at,
+                extract(epoch from last_seen_at)::bigint as last_seen_at,
+                extract(epoch from expires_at)::bigint as expires_at,
+                extract(epoch from revoked_at)::bigint as revoked_at,
+                revoked_reason,
+                replaced_by_session_id,
+                device_id,
+                user_agent,
+                ip_address
+            from wallet_sessions
+            where wallet = $1
+            order by coalesce(last_seen_at, created_at) desc, created_at desc
+            limit $2
+            "#,
+        )
+        .bind(wallet.trim())
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| WalletSessionRecord {
+                session_id: row.get("session_id"),
+                wallet: row.get("wallet"),
+                chain: row.get("chain"),
+                created_at: row.get("created_at"),
+                last_seen_at: row.get("last_seen_at"),
+                expires_at: row.get("expires_at"),
+                revoked_at: row.get("revoked_at"),
+                revoked_reason: row.get("revoked_reason"),
+                replaced_by_session_id: row.get("replaced_by_session_id"),
+                device_id: row.get("device_id"),
+                user_agent: row.get("user_agent"),
+                ip_address: row.get("ip_address"),
+            })
+            .collect())
+    }
+
+    pub async fn revoke_wallet_session(
+        &self,
+        wallet: &str,
+        target_session_id: &str,
+        reason: &str,
+    ) -> Result<bool, AppError> {
+        let result = crate::sqlx::query(
+            r#"
+            update wallet_sessions
+            set revoked_at = now(),
+                revoked_reason = coalesce(revoked_reason, $3)
+            where wallet = $1
+              and session_id = $2
+              and revoked_at is null
+            "#,
+        )
+        .bind(wallet.trim())
+        .bind(target_session_id.trim())
+        .bind(reason.trim())
+        .execute(&self.db)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn rotate_session(

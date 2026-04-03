@@ -622,6 +622,60 @@ function createSessionInfoNode(data) {
   return fragment;
 }
 
+function sessionStatusLabel(session) {
+  if (session.current && session.active) return "Current";
+  if (session.active) return "Active";
+  if (session.revoked_at) return "Revoked";
+  return "Expired";
+}
+
+function sessionStatusDetail(session) {
+  if (session.revoked_at) {
+    return `${session.revoked_reason || "revoked"} on ${new Date(session.revoked_at * 1000).toLocaleString()}`;
+  }
+  if (session.expires_at && session.expires_at * 1000 <= Date.now()) {
+    return `expired on ${new Date(session.expires_at * 1000).toLocaleString()}`;
+  }
+  return `expires ${session.expires_at ? new Date(session.expires_at * 1000).toLocaleString() : "unknown"}`;
+}
+
+function truncateSessionId(sessionId) {
+  const value = String(sessionId || "");
+  if (value.length <= 16) return value;
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+function createSessionCard(session) {
+  const card = createElement("article", { className: "event-card compact-card" });
+  const top = createElement("div", { className: "event-top" });
+  top.appendChild(createElement("strong", { text: session.device_id || session.user_agent || "Browser session" }));
+  top.appendChild(createElement("span", { className: "muted", text: sessionStatusLabel(session) }));
+  card.appendChild(top);
+  card.appendChild(createMetaLine("Session", truncateSessionId(session.session_id), { className: "event-meta" }));
+  card.appendChild(createMetaLine("Chain", session.chain || "unknown", { className: "event-meta" }));
+  card.appendChild(createMetaLine("Created", session.created_at ? new Date(session.created_at * 1000).toLocaleString() : "unknown", { className: "event-meta" }));
+  card.appendChild(createMetaLine("Last seen", session.last_seen_at ? new Date(session.last_seen_at * 1000).toLocaleString() : "unknown", { className: "event-meta" }));
+  card.appendChild(createMetaLine("Status", sessionStatusDetail(session), { className: "event-meta", important: session.active || session.current }));
+  card.appendChild(createMetaLine("User agent", session.user_agent || "not captured", { className: "event-meta" }));
+  card.appendChild(createMetaLine("IP", session.ip_address || "not captured", { className: "event-meta" }));
+
+  const actions = createElement("div", { className: "doc-actions" });
+  if (session.current) {
+    actions.appendChild(createElement("span", { className: "muted", text: "This device" }));
+  } else if (session.active) {
+    const revoke = createElement("button", { className: "button-danger", text: "Revoke" });
+    revoke.onclick = async () => {
+      if (!confirm("Revoke this other device session?")) return;
+      await revokeWalletSession(session.session_id);
+    };
+    actions.appendChild(revoke);
+  } else {
+    actions.appendChild(createElement("span", { className: "muted", text: "Inactive" }));
+  }
+  card.appendChild(actions);
+  return card;
+}
+
 function createDocumentCard(doc) {
   const card = createElement("div", { className: "doc-card" });
   card.appendChild(createElement("h4", { text: doc.label || "(untitled document)" }));
@@ -863,13 +917,21 @@ async function revokeAgent(agent) {
 
 // ================== DASHBOARD ==================
 async function loadSessionInfo() {
-  let data = await apiGet("/auth/session");
-  if (data.rotation_recommended) {
-    const rotated = await apiPost("/auth/session/rotate", {});
-    if (rotated?.session_id) {
-      saveSessionId(rotated.session_id);
-      data = rotated;
+  let data;
+  try {
+    data = await apiGet("/auth/session");
+    if (data.rotation_recommended) {
+      const rotated = await apiPost("/auth/session/rotate", {});
+      if (rotated?.session_id) {
+        saveSessionId(rotated.session_id);
+        data = rotated;
+      }
     }
+  } catch (error) {
+    clearSession();
+    alert("This browser session is no longer active. Sign in again.");
+    window.location.replace("/index.html");
+    throw error;
   }
   const sessionRoot = document.getElementById("sessionInfo");
   if (sessionRoot) {
@@ -882,6 +944,29 @@ async function loadSessionInfo() {
     signatureMode.value = currentChain === "sol" ? "sol_ed25519" : "evm_personal_sign";
     toggleSignatureMode();
   }
+}
+
+async function loadSessionHistory() {
+  const root = document.getElementById("sessionHistory");
+  if (!root) return;
+
+  const data = await apiGet("/auth/sessions");
+  if (!Array.isArray(data.items) || !data.items.length) {
+    setContent(root, createMessageCard("event-card", "No session history yet.", "Current and recent sessions will appear here.", "event-meta"));
+    return;
+  }
+  setContent(root, ...data.items.map((item) => createSessionCard(item)));
+}
+
+async function revokeWalletSession(sessionId) {
+  const result = await apiPost(`/auth/session/${encodeURIComponent(sessionId)}/revoke`, {});
+  if (result?.current_session_revoked) {
+    clearSession();
+    window.location.replace("/index.html");
+    return;
+  }
+  await loadSessionHistory();
+  await loadSessionInfo();
 }
 
 async function loadDocuments() {
@@ -2649,6 +2734,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (document.getElementById("docList")) {
     loadSessionInfo();
+    loadSessionHistory().catch((err) => alert(err.message));
     loadOverview().catch((err) => alert(err.message));
     loadDocuments()
       .then(async () => {
@@ -2678,6 +2764,7 @@ document.addEventListener("DOMContentLoaded", () => {
     document.getElementById("billingBackHomeBtn")?.addEventListener("click", () => switchDashboardTab("home"));
     document.getElementById("registerAgentBtn")?.addEventListener("click", () => registerAgent().catch((err) => alert(err.message)));
     document.getElementById("refreshAgentsBtn")?.addEventListener("click", () => loadAgents().catch((err) => alert(err.message)));
+    document.getElementById("refreshSessionsBtn")?.addEventListener("click", () => loadSessionHistory().catch((err) => alert(err.message)));
     document.getElementById("agentPolicyDoc")?.addEventListener("change", () => loadAgentPolicy().catch((err) => alert(err.message)));
     document.getElementById("refreshAgentPolicyBtn")?.addEventListener("click", () => loadAgentPolicy().catch((err) => alert(err.message)));
     document.getElementById("saveAgentPolicyBtn")?.addEventListener("click", () => saveAgentPolicy().catch((err) => alert(err.message)));
