@@ -221,7 +221,9 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/inbox", get(list_inbox_handler))
         .route("/api/inbox/:envelope_id/action", post(inbox_action_handler))
         .route("/auth/session", get(session_info_handler))
+        .route("/auth/sessions", get(list_sessions_handler))
         .route("/auth/session/rotate", post(rotate_session_handler))
+        .route("/auth/session/:session_id/revoke", post(revoke_specific_session_handler))
         .route("/auth/logout", post(logout_handler))
         .fallback_service(static_files)
         .with_state(state)
@@ -4338,6 +4340,46 @@ async fn session_info_handler(
     })))
 }
 
+fn wallet_session_record_json(
+    record: &identity_web::state::WalletSessionRecord,
+    current_session_id: &str,
+) -> serde_json::Value {
+    json!({
+        "session_id": record.session_id,
+        "wallet": record.wallet,
+        "chain": record.chain,
+        "created_at": record.created_at,
+        "last_seen_at": record.last_seen_at,
+        "expires_at": record.expires_at,
+        "revoked_at": record.revoked_at,
+        "revoked_reason": record.revoked_reason,
+        "replaced_by_session_id": record.replaced_by_session_id,
+        "device_id": record.device_id,
+        "user_agent": record.user_agent,
+        "ip_address": record.ip_address,
+        "current": record.session_id == current_session_id,
+        "active": record.revoked_at.is_none() && record.expires_at > chrono::Utc::now().timestamp()
+    })
+}
+
+async fn list_sessions_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let sess = require_session_from_headers(&st, &headers).await?;
+    let sessions = st.auth.list_wallet_sessions(&sess.wallet, 20).await?;
+
+    Ok(Json(json!({
+        "wallet": sess.wallet,
+        "chain": sess.chain,
+        "current_session_id": sess.session_id,
+        "items": sessions
+            .iter()
+            .map(|record| wallet_session_record_json(record, &sess.session_id))
+            .collect::<Vec<_>>()
+    })))
+}
+
 async fn rotate_session_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -4372,6 +4414,42 @@ async fn rotate_session_handler(
         "device_id": rotated.device_id,
         "user_agent": rotated.user_agent,
         "mlkem_pk_b64": keys.pk_b64
+    })))
+}
+
+async fn revoke_specific_session_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(target_session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let sess = require_session_from_headers(&st, &headers).await?;
+    let target_session_id = target_session_id.trim();
+
+    if target_session_id.is_empty() {
+        return Err(AppError::BadRequest("Missing target session id".into()));
+    }
+
+    let revoked = st
+        .auth
+        .revoke_wallet_session(&sess.wallet, target_session_id, "revoked_by_user")
+        .await?;
+
+    if !revoked {
+        return Err(AppError::BadRequest("Session not found or already inactive".into()));
+    }
+
+    if target_session_id == sess.session_id {
+        return Ok(Json(json!({
+            "ok": true,
+            "revoked": true,
+            "current_session_revoked": true
+        })));
+    }
+
+    Ok(Json(json!({
+        "ok": true,
+        "revoked": true,
+        "current_session_revoked": false
     })))
 }
 

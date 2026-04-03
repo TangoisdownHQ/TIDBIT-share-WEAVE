@@ -76,6 +76,17 @@
       <section class="grid stat-grid" id="overviewStats">
         <div class="stat-card"><strong>Loading…</strong><span class="muted">overview</span></div>
       </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Account Sessions</h3>
+            <p class="muted">A new login now revokes older wallet sessions. Review active devices and recent revoked sessions here.</p>
+          </div>
+          <button id="refreshSessionsBtn" class="button-secondary" type="button">Refresh Sessions</button>
+        </div>
+        <div id="sessionHistory" class="inbox-list">Loading sessions…</div>
+      </section>
     </div>
 
     <div id="docsTabPanel" class="hidden">
