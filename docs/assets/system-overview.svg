@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
   <title id="title">TIDBIT-share-WEAVE system overview</title>
-  <desc id="desc">A dark blue, burgundy, and green architecture diagram showing frontend, backend, Supabase, Arweave, wallets, public signing, and agent APIs.</desc>
+  <desc id="desc">A dark blue, burgundy, and green architecture diagram showing browser pages, browser-local ML-DSA signing, wallet sessions, the Rust backend, Supabase, Arweave, and actor types.</desc>
   <rect width="1280" height="760" fill="#09162b"/>
   <defs>
     <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
@@ -17,57 +17,61 @@
     </linearGradient>
   </defs>
   <text x="70" y="70" fill="#f3f5fb" font-size="34" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">TIDBIT-share-WEAVE System Overview</text>
-  <text x="70" y="102" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Wallet-native file custody, signing, sharing, storage, and anchoring.</text>
+  <text x="70" y="102" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Wallet-native file custody with browser-local PQ signing, durable sessions, sharing, storage, and anchoring.</text>
 
-  <rect x="60" y="150" rx="24" ry="24" width="290" height="220" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
+  <rect x="60" y="150" rx="24" ry="24" width="320" height="270" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
   <text x="88" y="195" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Frontend</text>
   <text x="88" y="228" fill="#f4d2a1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">dashboard.html · document.html</text>
   <text x="88" y="254" fill="#f4d2a1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">review.html · public-sign.html</text>
-  <text x="88" y="280" fill="#f4d2a1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">app.js · style.css</text>
+  <text x="88" y="280" fill="#f4d2a1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">app.js · pq-worker.js · style.css</text>
   <text x="88" y="322" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">User-facing surfaces for:</text>
   <text x="88" y="350" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">upload · review · share · sign</text>
+  <text x="88" y="378" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">browser-local ML-DSA keygen / sign</text>
 
-  <rect x="490" y="120" rx="28" ry="28" width="320" height="500" fill="url(#panel)" stroke="#d2475d" stroke-width="2.5"/>
-  <text x="528" y="170" fill="#f3f5fb" font-size="28" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Rust Backend</text>
-  <text x="528" y="206" fill="#f4d2a1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">main.rs routes + AppState</text>
-  <text x="528" y="240" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Identity</text>
-  <text x="528" y="266" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">MetaMask / EVM · Phantom / Solana</text>
-  <text x="528" y="314" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Custody Engine</text>
-  <text x="528" y="340" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">UPLOAD · VIEW · DOWNLOAD · SIGN</text>
-  <text x="528" y="366" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">SHARE · VERSION_CREATED · DELIVERY_*</text>
-  <text x="528" y="414" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Storage / Crypto</text>
-  <text x="528" y="440" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">server-managed PQ envelope objects</text>
-  <text x="528" y="488" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Sharing / Delivery / Billing</text>
-  <text x="528" y="514" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet routing · public links · Resend</text>
-  <text x="528" y="540" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Twilio hooks · trial / subscription state</text>
+  <rect x="470" y="120" rx="28" ry="28" width="360" height="530" fill="url(#panel)" stroke="#d2475d" stroke-width="2.5"/>
+  <text x="508" y="170" fill="#f3f5fb" font-size="28" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Rust Backend</text>
+  <text x="508" y="206" fill="#f4d2a1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">main.rs routes + AppState</text>
+  <text x="508" y="242" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Identity</text>
+  <text x="508" y="268" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">MetaMask / EVM · Phantom / Solana</text>
+  <text x="508" y="294" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">durable sessions · device binding · revoke</text>
+  <text x="508" y="338" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Custody Engine</text>
+  <text x="508" y="364" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">UPLOAD · VIEW · DOWNLOAD · SIGN</text>
+  <text x="508" y="390" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">SHARE · VERSION_CREATED · DELIVERY_*</text>
+  <text x="508" y="434" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Storage / Crypto</text>
+  <text x="508" y="460" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">server-managed ML-KEM envelope objects</text>
+  <text x="508" y="486" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">verify browser-local ML-DSA signatures</text>
+  <text x="508" y="530" fill="#a8b3d1" font-size="18" font-family="Avenir Next, Segoe UI, sans-serif">Sharing / Delivery / Billing</text>
+  <text x="508" y="556" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet routing · public links · Resend</text>
+  <text x="508" y="582" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">Twilio hooks · trial / subscription state</text>
 
-  <rect x="920" y="120" rx="24" ry="24" width="300" height="190" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
+  <rect x="920" y="120" rx="24" ry="24" width="300" height="210" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
   <text x="960" y="165" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Supabase Postgres</text>
   <text x="960" y="204" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">documents</text>
   <text x="960" y="230" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">document_events</text>
   <text x="960" y="256" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">document_shares</text>
-  <text x="960" y="282" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">account_subscriptions</text>
+  <text x="960" y="282" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">wallet_sessions</text>
+  <text x="960" y="308" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">account_subscriptions</text>
 
-  <rect x="920" y="340" rx="24" ry="24" width="300" height="160" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
-  <text x="960" y="375" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Supabase Storage</text>
-  <text x="960" y="414" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">active object storage</text>
-  <text x="960" y="440" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">PQ envelope blobs</text>
+  <rect x="920" y="360" rx="24" ry="24" width="300" height="160" fill="url(#panel)" stroke="#406fdd" stroke-width="2"/>
+  <text x="960" y="395" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Supabase Storage</text>
+  <text x="960" y="434" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">active object storage</text>
+  <text x="960" y="460" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">ML-KEM envelope blobs</text>
 
-  <rect x="920" y="540" rx="24" ry="24" width="300" height="130" fill="url(#panel)" stroke="#2f8c62" stroke-width="2"/>
-  <text x="960" y="575" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Arweave</text>
-  <text x="960" y="612" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">optional anchoring for file and</text>
-  <text x="960" y="636" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">evidence bundle hashes</text>
+  <rect x="920" y="560" rx="24" ry="24" width="300" height="130" fill="url(#panel)" stroke="#2f8c62" stroke-width="2"/>
+  <text x="960" y="595" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Arweave</text>
+  <text x="960" y="632" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">optional anchoring for file and</text>
+  <text x="960" y="656" fill="#a8b3d1" font-size="16" font-family="Avenir Next, Segoe UI, sans-serif">evidence bundle hashes</text>
 
-  <rect x="60" y="430" rx="24" ry="24" width="290" height="210" fill="url(#panel)" stroke="#2f8c62" stroke-width="2"/>
-  <text x="88" y="474" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Actors</text>
-  <text x="88" y="514" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">Sender wallets</text>
-  <text x="88" y="542" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">Recipient wallets</text>
-  <text x="88" y="570" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">Public signers</text>
-  <text x="88" y="598" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">AI agents</text>
+  <rect x="60" y="470" rx="24" ry="24" width="320" height="200" fill="url(#panel)" stroke="#2f8c62" stroke-width="2"/>
+  <text x="88" y="514" fill="#f3f5fb" font-size="24" font-family="Avenir Next, Segoe UI, sans-serif" font-weight="700">Actors</text>
+  <text x="88" y="552" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">Sender wallets</text>
+  <text x="88" y="580" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">Recipient wallets</text>
+  <text x="88" y="608" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">Public signers / guest links</text>
+  <text x="88" y="636" fill="#a8b3d1" font-size="17" font-family="Avenir Next, Segoe UI, sans-serif">AI agents and browser devices</text>
 
-  <path d="M350 260 L490 260" stroke="url(#accent)" stroke-width="6" fill="none"/>
-  <path d="M810 205 L920 205" stroke="#406fdd" stroke-width="6" fill="none"/>
-  <path d="M810 420 L920 420" stroke="#406fdd" stroke-width="6" fill="none"/>
-  <path d="M810 605 L920 605" stroke="url(#green)" stroke-width="6" fill="none"/>
-  <path d="M350 535 L490 535" stroke="url(#green)" stroke-width="6" fill="none"/>
+  <path d="M380 260 L470 260" stroke="url(#accent)" stroke-width="6" fill="none"/>
+  <path d="M830 215 L920 215" stroke="#406fdd" stroke-width="6" fill="none"/>
+  <path d="M830 440 L920 440" stroke="#406fdd" stroke-width="6" fill="none"/>
+  <path d="M830 625 L920 625" stroke="url(#green)" stroke-width="6" fill="none"/>
+  <path d="M380 570 L470 570" stroke="url(#green)" stroke-width="6" fill="none"/>
 </svg>

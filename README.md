@@ -53,6 +53,7 @@ This makes it suitable for high-assurance environments where trust cannot be ass
 - AES-256-GCM / XChaCha20-Poly1305 payload protection
 - ML-KEM (Kyber) quantum-resistant key encapsulation
 - ML-DSA post-quantum signatures via a maintained FIPS 204 implementation
+- Browser-local ML-DSA signing in the web app via a bundled WASM signer
 - SHA3-256 tamper-evident hashing
 
 ### 🧾 Zero-Trust Chain-of-Custody
@@ -66,6 +67,7 @@ This makes it suitable for high-assurance environments where trust cannot be ass
 - EVM and Solana wallets as identity roots
 - No usernames or passwords
 - Ownership and access tied to cryptographic proof
+- Device-bound wallet sessions with session history and revoke controls
 
 ### 📂 Secure File Versioning
 
@@ -111,9 +113,12 @@ Trust is never implied. It is cryptographically proven.
 Current state includes:
 
 - Wallet login for MetaMask and Phantom
+- New-login revocation of older active wallet sessions
+- Account session history with current, active, and revoked session visibility
 - Secure file uploads
 - Review-before-sign flow
 - Public signing links
+- Browser-native ML-DSA key generation, backup/import, and local PQ signing
 - Document version creation
 - Evidence export
 - Inbox and share records
@@ -148,6 +153,14 @@ Recent dependency hardening work included:
 - removing the broader `sqlx` umbrella dependency in favor of `sqlx-core` and `sqlx-postgres`
 - replacing the previous PQ signing dependency with a maintained ML-DSA implementation
 - re-running `cargo audit` until the Rust dependency graph was clean
+
+Recent trust-model hardening work also included:
+
+- durable wallet session and nonce storage in Postgres
+- device-bound session checks via `x-device-id`
+- rotation and explicit session revocation endpoints
+- automatic revocation of older active sessions when the same wallet logs in again
+- dashboard visibility into current, active, and revoked sessions
 
 See the [Audit Folder](./audit/README.md) for the detailed history and current state.
 
@@ -223,6 +236,8 @@ hash-anchored evidence
 ```
 
 Everything is designed to be tamper-evident and verifiable. Some production flows are still evolving toward full browser-side zero-trust PQ execution.
+
+Today, the web app already supports browser-local ML-DSA signing for review and public-envelope flows. The remaining PQ roadmap is about browser-side encryption, managed organizational custody, recovery, and crypto-agility.
 
 ## 🧪 Backend Setup
 

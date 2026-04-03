@@ -49,6 +49,15 @@ The Home tab shows top-level counts such as:
 
 Home is intentionally a summary page. It is the place to understand workspace state quickly, not the place to inspect every event.
 
+Home also now includes an `Account Sessions` panel. It shows:
+
+- the current browser session
+- other recent active sessions for the same wallet
+- revoked or displaced sessions
+- revoke controls for other devices
+
+When the same wallet signs in again on another device or browser, older active sessions are revoked automatically.
+
 ### Inbox / Documents
 
 This view is split into:
@@ -205,9 +214,31 @@ Used for Solana Ed25519 signature verification.
 
 ### PQ / ML-DSA
 
-Optional high-assurance mode where PQ signature material is provided and verified by the backend.
+Optional high-assurance mode where ML-DSA keys can be generated and used locally inside the browser.
 
 The maintained implementation in the current codebase is ML-DSA through `fips204`.
+
+In the current web flow:
+
+- the browser generates the ML-DSA keypair locally
+- the signer can export or import a local backup file
+- signing happens locally in the browser
+- the server receives the public key and signature proof for verification and evidence recording
+
+This is different from the older manual paste flow. The browser now handles PQ signing directly for review and public-envelope signing pages.
+
+## Session And Device Behavior
+
+Wallet login is still the root identity model, but sessions are now managed more strictly.
+
+Current behavior:
+
+- a successful new login for the same wallet revokes older active sessions
+- each browser session is tied to a device id header
+- the dashboard shows current, active, and revoked sessions
+- users can manually revoke other device sessions from the `Account Sessions` panel
+
+This means a signer can see when a prior browser session was displaced by a newer login, instead of silently leaving multiple old sessions active.
 
 ## What Users See In The Audit Trail
 
@@ -267,6 +298,7 @@ Users should use evidence export when they need:
 ## Important Current Boundaries
 
 - Files are stored in Supabase Storage as app-managed PQ envelope objects.
+- Browser-local ML-DSA signing is available, but browser-side PQ encryption is not the default web path yet.
 - Arweave anchoring is optional, not mandatory.
 - Billing exists as status scaffolding, not full paid checkout yet.
 - Email/SMS delivery depends on provider configuration.

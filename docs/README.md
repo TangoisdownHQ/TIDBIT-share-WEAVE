@@ -17,6 +17,12 @@ This documentation set explains what the app does, how the backend and frontend 
 
 ![User flow](./assets/user-flow.svg)
 
+These diagrams are intended to answer different questions:
+
+- `system-overview.svg` shows the trust boundary: browser surfaces, browser-local ML-DSA signing, backend verification, sessions, storage, and anchoring
+- `user-flow.svg` shows the human path through login, session control, review, sharing, signing, and evidence export
+- `code-map.svg` shows where the runtime pieces live in the repository when you need to trace implementation details
+
 ## What The App Is
 
 TIDBIT-share-WEAVE is a wallet-native file custody and signing platform built around:
@@ -45,12 +51,15 @@ If you are new to the project:
 The app currently supports:
 
 - MetaMask and Phantom login
+- device-bound wallet sessions with current / active / revoked session visibility
+- automatic revocation of older wallet sessions when the same wallet logs in again
 - upload, review, download, sign, delete, and share
 - public signing links
 - wallet-to-wallet sharing
 - shared inbox and shared activity feed
 - evidence export
 - linked document versions
+- browser-local ML-DSA key generation, backup/import, and signing for web review flows
 - optional Arweave anchoring
 - delivery provider integration points for Resend and Twilio
 - billing status scaffolding for a 30-day trial and `$8/month` plan
@@ -60,7 +69,7 @@ The app currently supports:
 The app has a real custody ledger and real signature verification, but there are still important boundaries:
 
 - Supabase object storage is active application storage
-- the current web path uses server-managed PQ envelope storage, not browser-generated PQ encryption yet
+- the current web path supports browser-local ML-DSA signing, but not browser-generated PQ encryption yet
 - signatures are cryptographically verified by the app, but they are not on-chain attestations by default
 - billing status exists, but Stripe checkout and hard billing enforcement are not finished yet
 
