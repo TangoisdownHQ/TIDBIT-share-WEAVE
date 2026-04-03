@@ -98,19 +98,19 @@
                 <div>
                     <h3>What is already live</h3>
                     <p class="hero-text">
-                        The current app uses server-managed post-quantum envelope storage for document custody and supports ML-DSA as the maintained PQ signing path for high-assurance verification.
+                        The production app already combines ML-KEM-oriented envelope custody with browser-local ML-DSA key generation and signing, so users can keep PQ signing keys in their own browser while the backend preserves the evidence trail.
                     </p>
                 </div>
                 <div>
                     <h3>What users can verify</h3>
                     <p class="hero-text">
-                        Each file is tied to hashes, custody events, signer metadata, version lineage, and optional external anchoring so the evidence package remains tamper-evident over time.
+                        Each file is tied to hashes, custody events, signer metadata, share activity, session-aware actor history, version lineage, evidence bundle data, and optional external anchoring so the record stays portable and tamper-evident over time.
                     </p>
                 </div>
                 <div>
                     <h3>What is still maturing</h3>
                     <p class="hero-text">
-                        Full browser-side PQ encryption and browser-native PQ signing are still in progress. Today the strongest PQ path is managed by the application backend and evidence model.
+                        Full browser-side PQ encryption for document contents is not the default web path yet, and organization-managed PQ key custody, recovery, and crypto-agility are still ahead. Today the strongest shipped PQ user path is local ML-DSA signing plus the backend custody and evidence model.
                     </p>
                 </div>
             </div>
@@ -119,21 +119,21 @@
                     <p class="eyebrow">ML-KEM Envelope Model</p>
                     <h3>Protect storage with PQ-oriented envelope handling.</h3>
                     <p class="hero-text">
-                        Active application storage stays fast, while the file custody model uses a post-quantum envelope approach instead of treating storage as a trusted plain blob.
+                        Active application storage stays practical, while document custody uses a post-quantum envelope model so the file is handled as protected evidence instead of a trusted plain blob in storage.
                     </p>
                 </article>
                 <article class="panel marketing-card">
                     <p class="eyebrow">ML-DSA Signatures</p>
                     <h3>Support a maintained PQ signature path.</h3>
                     <p class="hero-text">
-                        Human wallet flows still support EVM and Solana, but the system also supports ML-DSA verification for users who need a stronger post-quantum signature story.
+                        Human wallet flows still support EVM and Solana, and the web app now also supports browser-local ML-DSA key generation, backup, import, and signing for users who want a stronger post-quantum signature path.
                     </p>
                 </article>
                 <article class="panel marketing-card">
                     <p class="eyebrow">Evidence And Anchoring</p>
                     <h3>Keep the proof portable.</h3>
                     <p class="hero-text">
-                        Evidence bundles, hashes, signatures, and optional Arweave anchoring make the record verifiable beyond the immediate app session.
+                        Evidence bundles, event-chain metadata, bundle signatures, hashes, and optional Arweave anchoring make the record verifiable beyond the immediate app session or any single storage provider.
                     </p>
                 </article>
             </div>
@@ -182,7 +182,7 @@
                 </div>
                 <div class="marketing-step">
                     <strong>4. Sign</strong>
-                    <p>Support EVM, Solana, guest, and ML-DSA oriented signing paths.</p>
+                    <p>Support EVM, Solana, policy-gated guest attestation, and browser-local ML-DSA signing paths.</p>
                 </div>
                 <div class="marketing-step">
                     <strong>5. Export</strong>
