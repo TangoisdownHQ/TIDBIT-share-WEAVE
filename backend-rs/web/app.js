@@ -23,6 +23,25 @@ function getSessionId() {
 function clearSession() {
   localStorage.removeItem("TIDBIT_SESSION_ID");
 }
+function getDeviceId() {
+  let deviceId = localStorage.getItem("TIDBIT_DEVICE_ID");
+  if (!deviceId) {
+    deviceId =
+      typeof crypto?.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `tidbit-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem("TIDBIT_DEVICE_ID", deviceId);
+  }
+  return deviceId;
+}
+
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  const sid = getSessionId();
+  if (sid) headers["x-session-id"] = sid;
+  headers["x-device-id"] = getDeviceId();
+  return headers;
+}
 
 function getMetaMaskProvider() {
   const injected = window.ethereum;
@@ -131,7 +150,10 @@ async function loginWithMetamask() {
   try {
     status && (status.innerText = "Requesting nonce...");
 
-    const nonceRes = await fetch(`${API}/api/identity/evm/nonce`, { method: "POST" });
+    const nonceRes = await fetch(`${API}/api/identity/evm/nonce`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
     if (!nonceRes.ok) throw new Error(await nonceRes.text());
 
     const { session_id, nonce, message: nonceMessage } = await nonceRes.json();
@@ -156,13 +178,14 @@ Version: 1`;
 
     const verifyRes = await fetch(`${API}/api/identity/evm/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ session_id, address, signature }),
     });
 
     if (!verifyRes.ok) throw new Error(await verifyRes.text());
 
-    saveSessionId(session_id);
+    const verified = await verifyRes.json();
+    saveSessionId(verified.session_id || session_id);
     window.location.replace("/dashboard.html");
   } catch (err) {
     console.error(err);
@@ -183,7 +206,10 @@ async function loginWithPhantom() {
   try {
     status && (status.innerText = "Requesting Phantom nonce...");
 
-    const nonceRes = await fetch(`${API}/api/identity/sol/nonce`, { method: "POST" });
+    const nonceRes = await fetch(`${API}/api/identity/sol/nonce`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
     if (!nonceRes.ok) throw new Error(await nonceRes.text());
 
     const { session_id, nonce, message: nonceMessage } = await nonceRes.json();
@@ -204,13 +230,14 @@ async function loginWithPhantom() {
 
     const verifyRes = await fetch(`${API}/api/identity/sol/verify`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ session_id, address, signature }),
     });
 
     if (!verifyRes.ok) throw new Error(await verifyRes.text());
 
-    saveSessionId(session_id);
+    const verified = await verifyRes.json();
+    saveSessionId(verified.session_id || session_id);
     window.location.replace("/dashboard.html");
   } catch (err) {
     console.error(err);
@@ -232,7 +259,7 @@ async function logout() {
   if (sid) {
     await fetch(`${API}/auth/logout`, {
       method: "POST",
-      headers: { "x-session-id": sid },
+      headers: authHeaders(),
     });
   }
   clearSession();
@@ -241,22 +268,17 @@ async function logout() {
 
 // ================== API ==================
 async function apiGet(path) {
-  const sid = getSessionId();
   const resp = await fetch(`${API}${path}`, {
-    headers: { "x-session-id": sid },
+    headers: authHeaders(),
   });
   if (!resp.ok) throw new Error(await resp.text());
   return resp.json();
 }
 
 async function apiPost(path, body) {
-  const sid = getSessionId();
   const resp = await fetch(`${API}${path}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-session-id": sid,
-    },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body || {}),
   });
   if (!resp.ok) throw new Error(await resp.text());
@@ -280,9 +302,7 @@ async function apiPublicPost(path, body) {
 }
 
 async function apiFetchBlob(path, publicFetch = false) {
-  const headers = publicFetch
-    ? {}
-    : { "x-session-id": getSessionId() };
+  const headers = publicFetch ? {} : authHeaders();
   const resp = await fetch(`${API}${path}`, { headers });
   if (!resp.ok) throw new Error(await resp.text());
   return resp.blob();
@@ -383,6 +403,9 @@ function createSessionInfoNode(data) {
     ["Wallet", data.wallet],
     ["Chain", data.chain],
     ["Session", `Active since ${new Date(data.created_at * 1000).toLocaleString()}`],
+    ["Expires", data.expires_at ? new Date(data.expires_at * 1000).toLocaleString() : "unknown"],
+    ["Device", data.device_id || "browser-managed"],
+    ["Rotation", data.rotation_recommended ? "recommended now" : "healthy"],
     ["ML-KEM PK", `${(data.mlkem_pk_b64 || "").slice(0, 48)}${data.mlkem_pk_b64 ? "…" : ""}`],
   ];
   items.forEach(([label, value]) => {
@@ -587,7 +610,14 @@ async function revokeAgent(agent) {
 
 // ================== DASHBOARD ==================
 async function loadSessionInfo() {
-  const data = await apiGet("/auth/session");
+  let data = await apiGet("/auth/session");
+  if (data.rotation_recommended) {
+    const rotated = await apiPost("/auth/session/rotate", {});
+    if (rotated?.session_id) {
+      saveSessionId(rotated.session_id);
+      data = rotated;
+    }
+  }
   const sessionRoot = document.getElementById("sessionInfo");
   if (sessionRoot) {
     setContent(sessionRoot, createSessionInfoNode(data));
@@ -697,7 +727,6 @@ async function uploadDoc() {
   const anchor = document.getElementById("uploadAnchor")?.checked;
   if (!file) return alert("Pick a file");
 
-  const sid = getSessionId();
   const form = new FormData();
   form.append("file", file);
   if (label) form.append("label", label);
@@ -708,7 +737,7 @@ async function uploadDoc() {
 
   const xhr = new XMLHttpRequest();
   xhr.open("POST", `${API}/api/doc/upload`);
-  xhr.setRequestHeader("x-session-id", sid);
+  Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
   xhr.upload.onprogress = (event) => {
     if (!event.lengthComputable) return;
     const pct = Math.round((event.loaded / event.total) * 100);
@@ -1174,6 +1203,14 @@ function prepareShare(doc) {
     const el = document.getElementById(id);
     if (el) el.value = "";
   });
+  const expiry = document.getElementById("modalShareExpiresHours");
+  if (expiry) expiry.value = "168";
+  const oneTime = document.getElementById("modalShareOneTimeUse");
+  if (oneTime) oneTime.checked = false;
+  const downloadAllowed = document.getElementById("modalDownloadAllowed");
+  if (downloadAllowed) downloadAllowed.checked = true;
+  const allowGuestSign = document.getElementById("modalAllowGuestSign");
+  if (allowGuestSign) allowGuestSign.checked = false;
   const recipientChain = document.getElementById("modalRecipientChain");
   if (recipientChain) recipientChain.value = currentChain === "sol" ? "sol" : "evm";
   const stateRoot = document.getElementById("shareModalState");
@@ -1302,9 +1339,17 @@ async function shareDocument(docId) {
   const recipientEmail = document.getElementById("modalRecipientEmail")?.value || null;
   const recipientPhone = document.getElementById("modalRecipientPhone")?.value || null;
   const agentHandle = document.getElementById("modalAgentHandle")?.value.trim() || null;
+  const expiresInHoursRaw = document.getElementById("modalShareExpiresHours")?.value || null;
+  const expiresInHours = expiresInHoursRaw ? Number.parseInt(expiresInHoursRaw, 10) : null;
+  const oneTimeUse = Boolean(document.getElementById("modalShareOneTimeUse")?.checked);
+  const downloadAllowed = Boolean(document.getElementById("modalDownloadAllowed")?.checked);
+  const allowGuestSign = Boolean(document.getElementById("modalAllowGuestSign")?.checked);
 
   if (!recipient && !recipientEmail && !recipientPhone) {
     return alert("Provide a wallet, email, or phone number for the recipient.");
+  }
+  if (expiresInHoursRaw && (!Number.isFinite(expiresInHours) || expiresInHours <= 0)) {
+    return alert("Expiry hours must be a positive number.");
   }
   if (recipient && !confirmRecipientNetwork(recipient, recipientChain)) {
     throw new Error("Share canceled while verifying recipient network.");
@@ -1326,6 +1371,10 @@ async function shareDocument(docId) {
     signature,
     recipient_email: recipientEmail,
     recipient_phone: recipientPhone,
+    expires_in_hours: Number.isFinite(expiresInHours) ? expiresInHours : null,
+    one_time_use: oneTimeUse,
+    download_allowed: downloadAllowed,
+    allow_guest_sign: allowGuestSign,
   });
 
   return { ...res, recipient_wallet: recipient, recipient_chain: recipient ? recipientChain : null };
@@ -1343,6 +1392,9 @@ async function shareSelectedDocument() {
   const summary = [
     `Status: ${res.status || "created"}`,
     `Signing URL: ${res.signing_url}`,
+    `Expires: ${res.expires_at ? new Date(res.expires_at).toLocaleString() : "server default"}`,
+    `One-time use: ${res.one_time_use ? "yes" : "no"}`,
+    `Guest signing: ${res.allow_guest_sign ? "allowed" : "wallet/PQ only"}`,
     `Wallet route: ${res.recipient_wallet ? `ready for ${res.recipient_chain || "wallet"} inbox` : "not used"}`,
     `Provider delivery issues: ${res.delivery_errors?.length || 0}`,
   ].join("\n");
@@ -1389,10 +1441,9 @@ async function createVersion() {
     document.getElementById("versionAnchor")?.checked ? "true" : "false"
   );
 
-  const sid = getSessionId();
   const resp = await fetch(`${API}/api/doc/${selectedVersionParent.id}/version`, {
     method: "POST",
-    headers: { "x-session-id": sid },
+    headers: authHeaders(),
     body: form,
   });
 
@@ -1474,6 +1525,41 @@ function togglePublicSignatureMode() {
   if (evmFields) evmFields.classList.toggle("hidden", mode !== "evm_personal_sign");
   if (solFields) solFields.classList.toggle("hidden", mode !== "sol_ed25519");
   if (pqFields) pqFields.classList.toggle("hidden", mode !== "pq_mldsa65");
+}
+
+function configurePublicSignatureModes(envelope) {
+  const select = document.getElementById("publicSignatureMode");
+  if (!select) return;
+  const labels = {
+    guest_attestation: "Guided Guest Attestation",
+    evm_personal_sign: "MetaMask / EVM",
+    sol_ed25519: "Phantom / Solana",
+    pq_mldsa65: "ML-DSA PQ",
+  };
+  const allowed = Array.isArray(envelope.allowed_signature_types) && envelope.allowed_signature_types.length
+    ? envelope.allowed_signature_types
+    : ["evm_personal_sign", "sol_ed25519", "pq_mldsa65"];
+
+  select.replaceChildren(
+    ...allowed.map((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = labels[value] || value;
+      return option;
+    })
+  );
+
+  if (!select.dataset.userSelected) {
+    const preferred =
+      envelope.recipient_chain === "sol" && allowed.includes("sol_ed25519")
+        ? "sol_ed25519"
+        : allowed.includes("evm_personal_sign")
+          ? "evm_personal_sign"
+          : allowed[0];
+    if (preferred) select.value = preferred;
+  } else if (!allowed.includes(select.value) && allowed[0]) {
+    select.value = allowed[0];
+  }
 }
 
 function selectFieldTool(kind) {
@@ -1939,10 +2025,9 @@ async function loadEditorPage() {
     form.append("before_hash_hex", review.hash_hex);
 
     document.getElementById("editStatus").textContent = "Saving edited version…";
-    const sid = getSessionId();
     const resp = await fetch(`${API}/api/doc/${id}/version`, {
       method: "POST",
-      headers: { "x-session-id": sid },
+      headers: authHeaders(),
       body: form,
     });
     if (!resp.ok) throw new Error(await resp.text());
@@ -1984,6 +2069,10 @@ async function loadPublicSignPage() {
       createMetaLine("From", envelope.sender_wallet),
       createMetaLine("Hash", envelope.hash_hex),
       createMetaLine("Version", `v${envelope.version}`),
+      createMetaLine("Expires", envelope.expires_at ? new Date(envelope.expires_at).toLocaleString() : "no expiry"),
+      createMetaLine("One-time use", envelope.one_time_use ? "yes" : "no"),
+      createMetaLine("Downloads", envelope.download_allowed ? "allowed" : "preview only"),
+      createMetaLine("Guest signing", envelope.allow_guest_sign ? "allowed" : "disabled"),
       createMetaLine("Arweave", envelope.arweave_tx || "not anchored"),
       createMetaLine("Recipient name", envelope.recipient_name || "not provided"),
       createMetaLine("Recipient wallet", envelope.recipient_wallet || "guest link"),
@@ -2002,10 +2091,7 @@ async function loadPublicSignPage() {
       })
     );
     updateAnnotationFieldList(window.publicEnvelopeFields);
-    const publicSignatureMode = document.getElementById("publicSignatureMode");
-    if (publicSignatureMode && !publicSignatureMode.dataset.userSelected) {
-      publicSignatureMode.value = envelope.recipient_chain === "sol" ? "sol_ed25519" : "guest_attestation";
-    }
+    configurePublicSignatureModes(envelope);
     document.getElementById("publicSignSubmit").disabled = !verified;
     togglePublicSignatureMode();
   } catch (err) {

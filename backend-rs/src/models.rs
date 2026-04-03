@@ -43,6 +43,10 @@ pub struct ShareRequest {
     pub signature: Option<String>,
     pub recipient_email: Option<String>,
     pub recipient_phone: Option<String>,
+    pub expires_in_hours: Option<i64>,
+    pub one_time_use: Option<bool>,
+    pub download_allowed: Option<bool>,
+    pub allow_guest_sign: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

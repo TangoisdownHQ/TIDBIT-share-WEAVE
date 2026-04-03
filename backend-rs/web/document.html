@@ -166,6 +166,27 @@
         <textarea id="modalShareNote" rows="4" placeholder="Review, approve, sign, or pass to an AI agent workflow."></textarea>
       </div>
 
+      <div class="grid two-up compact">
+        <div class="form-row">
+          <label for="modalShareExpiresHours">Expiry (hours)</label>
+          <input id="modalShareExpiresHours" type="number" min="1" max="720" value="168" />
+        </div>
+        <div class="form-row">
+          <label class="toggle-row" for="modalShareOneTimeUse">
+            <input id="modalShareOneTimeUse" type="checkbox" />
+            <span>One-time completion only</span>
+          </label>
+          <label class="toggle-row" for="modalDownloadAllowed">
+            <input id="modalDownloadAllowed" type="checkbox" checked />
+            <span>Allow document download</span>
+          </label>
+          <label class="toggle-row" for="modalAllowGuestSign">
+            <input id="modalAllowGuestSign" type="checkbox" />
+            <span>Allow guest attestation</span>
+          </label>
+        </div>
+      </div>
+
       <div class="doc-actions">
         <button id="shareBtn" class="button-primary">Create signing link</button>
         <a id="emailShareLink" class="button-link disabled" href="#" aria-disabled="true">Email</a>
