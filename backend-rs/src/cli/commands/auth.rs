@@ -7,7 +7,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-use crate::identity_web::evm::evm_login_message;
 use crate::cli::parser::AuthCommands;
 
 // ======================================================
@@ -56,7 +55,7 @@ pub async fn auth_evm(api: &str, private_key_hex: &str) -> Result<()> {
     // --------------------------------------------------
     // 3. Sign EXACT message (same as MetaMask)
     // --------------------------------------------------
-    let message = evm_login_message(&nonce_resp.nonce);
+    let message = nonce_resp.message.clone();
     let signature: Signature = wallet.sign_message(message).await?;
 
     // --------------------------------------------------

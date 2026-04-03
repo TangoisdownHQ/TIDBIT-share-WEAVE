@@ -134,11 +134,13 @@ async function loginWithMetamask() {
     const nonceRes = await fetch(`${API}/api/identity/evm/nonce`, { method: "POST" });
     if (!nonceRes.ok) throw new Error(await nonceRes.text());
 
-    const { session_id, nonce } = await nonceRes.json();
+    const { session_id, nonce, message: nonceMessage } = await nonceRes.json();
 
     const [address] = await provider.request({ method: "eth_requestAccounts" });
 
-    const message = `TIDBIT Authentication
+    const message =
+      nonceMessage ||
+      `TIDBIT Authentication
 Nonce: ${nonce}
 Purpose: Login
 Version: 1`;
@@ -184,10 +186,12 @@ async function loginWithPhantom() {
     const nonceRes = await fetch(`${API}/api/identity/sol/nonce`, { method: "POST" });
     if (!nonceRes.ok) throw new Error(await nonceRes.text());
 
-    const { session_id, nonce } = await nonceRes.json();
+    const { session_id, nonce, message: nonceMessage } = await nonceRes.json();
     const connectRes = await provider.connect();
     const address = connectRes.publicKey.toString();
-    const message = `TIDBIT Authentication\nNonce: ${nonce}\nPurpose: Login\nVersion: 1`;
+    const message =
+      nonceMessage ||
+      `TIDBIT Authentication\nNonce: ${nonce}\nPurpose: Login\nVersion: 1`;
 
     status && (status.innerText = "Signing with Phantom...");
     const encoded = new TextEncoder().encode(message);
