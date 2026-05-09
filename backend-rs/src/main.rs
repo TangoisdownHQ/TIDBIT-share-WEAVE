@@ -6528,22 +6528,29 @@ async fn public_envelope_sign_handler(
 async fn session_info_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Response, AppError> {
     let sess = require_session_from_headers(&st, &headers).await?;
     let keys = load_or_create_server_mlkem_keypair(&st.db, &sess.wallet).await?;
 
-    Ok(Json(json!({
-        "active": true,
-        "session_id": sess.session_id,
-        "wallet": sess.wallet,
-        "chain": sess.chain,
-        "created_at": sess.created_at,
-        "expires_at": sess.expires_at,
-        "rotation_recommended": sess.rotation_recommended(),
-        "device_id": sess.device_id,
-        "user_agent": sess.user_agent,
-        "mlkem_pk_b64": keys.pk_b64
-    })))
+    Ok((
+        [(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, max-age=0"),
+        )],
+        Json(json!({
+            "active": true,
+            "session_id": sess.session_id,
+            "wallet": sess.wallet,
+            "chain": sess.chain,
+            "created_at": sess.created_at,
+            "expires_at": sess.expires_at,
+            "rotation_recommended": sess.rotation_recommended(),
+            "device_id": sess.device_id,
+            "user_agent": sess.user_agent,
+            "mlkem_pk_b64": keys.pk_b64
+        })),
+    )
+        .into_response())
 }
 
 fn wallet_session_record_json(

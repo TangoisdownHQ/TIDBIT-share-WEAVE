@@ -256,8 +256,9 @@ function pendingLogicalId() {
     : `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-async function ensureActiveEncryptionContext() {
-  if (currentWallet && currentChain && currentMlkemPublicKey) {
+async function ensureActiveEncryptionContext(options = {}) {
+  const refresh = options.refresh === true;
+  if (!refresh && currentWallet && currentChain && currentMlkemPublicKey) {
     return {
       wallet: currentWallet,
       chain: currentChain,
@@ -320,15 +321,23 @@ async function encryptBytesWithXChaCha(keyBytes, nonceBytes, plaintextBytes) {
 
 async function buildClientEncryptedEnvelopeBytes(fileBytes, options = {}) {
   const plaintextBytes = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
-  const context = await ensureActiveEncryptionContext();
+  const context = await ensureActiveEncryptionContext({ refresh: true });
   const effectiveLabel = options.label || options.fileName || "Untitled document";
   const effectiveMime = options.mimeType || "application/octet-stream";
-  const ownerWallet = normalizeWalletForChain(
-    options.ownerWallet || context.wallet || "",
-    options.ownerChain || context.chain || ""
-  );
+  const ownerWallet = normalizeWalletForChain(context.wallet || "", context.chain || "");
   if (!ownerWallet) {
     throw new Error("Active wallet is unavailable for browser encryption.");
+  }
+
+  const requestedOwnerWallet = normalizeWalletForChain(
+    options.ownerWallet || "",
+    options.ownerChain || context.chain || ""
+  );
+  if (requestedOwnerWallet && requestedOwnerWallet !== ownerWallet) {
+    console.warn("Ignoring stale owner wallet while building encrypted upload envelope", {
+      requestedOwnerWallet,
+      ownerWallet,
+    });
   }
 
   const cek = randomBytes(32);
@@ -705,6 +714,7 @@ async function logout() {
 async function apiGet(path) {
   const resp = await fetch(`${API}${path}`, {
     headers: authHeaders(),
+    cache: "no-store",
   });
   if (!resp.ok) throw new Error(await resp.text());
   return resp.json();
