@@ -25,12 +25,73 @@
         <div class="app-version-badge">Admin</div>
         <div id="adminWindowBadge" class="app-version-badge">30d</div>
         <button id="refreshAdminBtn" class="button-secondary" type="button">Refresh</button>
+        <button id="lockAdminBtn" class="button-secondary" type="button">Lock</button>
         <button id="logoutAdminBtn" class="button-secondary" type="button">Logout</button>
       </div>
     </section>
 
     <section class="panel">
       <div id="adminStatus" class="session-card">Checking session and access…</div>
+    </section>
+
+    <section id="adminAuthGate" class="panel hidden">
+      <div class="section-head">
+        <div>
+          <h3>Admin Verification</h3>
+          <p class="muted">Wallet allowlist checks happen first. This second step ties a password and optional MFA code to the admin wallet itself.</p>
+        </div>
+      </div>
+      <div id="adminAuthMessage" class="session-card">Checking admin security…</div>
+
+      <div id="adminAuthSetup" class="grid two-up hidden top-gap">
+        <div class="panel">
+          <h3>Create Admin Password</h3>
+          <div class="form-row">
+            <label for="adminSetupUsername">Username</label>
+            <input id="adminSetupUsername" type="text" readonly>
+          </div>
+          <div class="form-row">
+            <label for="adminSetupPassword">New password</label>
+            <input id="adminSetupPassword" type="password" autocomplete="new-password">
+          </div>
+          <div class="form-row">
+            <label for="adminSetupPasswordConfirm">Confirm password</label>
+            <input id="adminSetupPasswordConfirm" type="password" autocomplete="new-password">
+          </div>
+          <button id="adminSetupBtn" type="button">Create password</button>
+        </div>
+        <div class="panel">
+          <h3>What This Adds</h3>
+          <div class="session-card">
+            The wallet stays the primary identity, and this adds a second admin-only secret before analytics or admin settings unlock.
+          </div>
+        </div>
+      </div>
+
+      <div id="adminAuthLogin" class="grid two-up hidden top-gap">
+        <div class="panel">
+          <h3>Unlock Console</h3>
+          <div class="form-row">
+            <label for="adminLoginUsername">Username</label>
+            <input id="adminLoginUsername" type="text" readonly>
+          </div>
+          <div class="form-row">
+            <label for="adminLoginPassword">Password</label>
+            <input id="adminLoginPassword" type="password" autocomplete="current-password">
+          </div>
+          <div id="adminLoginTotpRow" class="form-row hidden">
+            <label for="adminLoginTotp">MFA code</label>
+            <input id="adminLoginTotp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+          </div>
+          <button id="adminLoginBtn" type="button">Unlock console</button>
+        </div>
+        <div class="panel">
+          <h3>Current Model</h3>
+          <div class="session-card">
+            Username is your wallet address. Password is per-admin-wallet. MFA, when enabled, is a second TOTP code after the password.
+          </div>
+        </div>
+      </div>
     </section>
 
     <div id="adminContent" class="hidden">
@@ -42,6 +103,79 @@
         <div class="panel">
           <h3>Tracking State</h3>
           <div id="trackingInfo" class="session-card">Loading tracking state…</div>
+        </div>
+      </section>
+
+      <section id="adminSecuritySection" class="grid two-up hidden">
+        <div class="panel">
+          <h3>Admin Security</h3>
+          <div id="adminSecurityStatus" class="session-card">Loading admin security…</div>
+          <div class="top-gap form-row">
+            <label for="adminChangePasswordUsername">Username</label>
+            <input id="adminChangePasswordUsername" type="text" readonly>
+          </div>
+          <div class="form-row">
+            <label for="adminCurrentPassword">Current password</label>
+            <input id="adminCurrentPassword" type="password" autocomplete="current-password">
+          </div>
+          <div class="form-row">
+            <label for="adminNewPassword">New password</label>
+            <input id="adminNewPassword" type="password" autocomplete="new-password">
+          </div>
+          <div class="form-row">
+            <label for="adminNewPasswordConfirm">Confirm new password</label>
+            <input id="adminNewPasswordConfirm" type="password" autocomplete="new-password">
+          </div>
+          <div id="adminPasswordTotpRow" class="form-row hidden">
+            <label for="adminPasswordTotp">MFA code</label>
+            <input id="adminPasswordTotp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+          </div>
+          <button id="adminChangePasswordBtn" type="button">Change password</button>
+        </div>
+
+        <div class="panel">
+          <h3>MFA</h3>
+          <div id="adminMfaStatus" class="session-card">Loading MFA state…</div>
+
+          <div id="adminMfaEnrollBlock" class="top-gap">
+            <div class="form-row">
+              <label for="adminMfaUsername">Wallet username</label>
+              <input id="adminMfaUsername" type="text" readonly>
+            </div>
+            <div class="form-row">
+              <label for="adminMfaPassword">Current password</label>
+              <input id="adminMfaPassword" type="password" autocomplete="current-password">
+            </div>
+            <button id="adminMfaEnrollBtn" type="button">Generate MFA secret</button>
+          </div>
+
+          <div id="adminMfaVerifyBlock" class="hidden top-gap">
+            <div class="session-card">
+              <div class="doc-meta"><strong>Secret:</strong> <span id="adminMfaSecret">Pending…</span></div>
+              <div class="doc-meta"><strong>Authenticator URL:</strong> <a id="adminMfaOtpauth" href="#" target="_blank" rel="noopener noreferrer">Open otpauth link</a></div>
+            </div>
+            <div class="form-row top-gap">
+              <label for="adminMfaVerifyPassword">Current password</label>
+              <input id="adminMfaVerifyPassword" type="password" autocomplete="current-password">
+            </div>
+            <div class="form-row">
+              <label for="adminMfaVerifyCode">Verification code</label>
+              <input id="adminMfaVerifyCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+            </div>
+            <button id="adminMfaVerifyBtn" type="button">Enable MFA</button>
+          </div>
+
+          <div id="adminMfaEnabledBlock" class="hidden top-gap">
+            <div class="form-row">
+              <label for="adminMfaDisablePassword">Current password</label>
+              <input id="adminMfaDisablePassword" type="password" autocomplete="current-password">
+            </div>
+            <div class="form-row">
+              <label for="adminMfaDisableCode">Current MFA code</label>
+              <input id="adminMfaDisableCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456">
+            </div>
+            <button id="adminMfaDisableBtn" type="button">Disable MFA</button>
+          </div>
         </div>
       </section>
 

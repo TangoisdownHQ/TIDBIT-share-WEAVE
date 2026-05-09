@@ -607,6 +607,49 @@ progress {
   padding: 24px;
 }
 
+.preview-docx {
+  width: 100%;
+  min-height: 420px;
+  padding: 28px;
+  background: linear-gradient(180deg, rgba(248, 250, 254, 0.98), rgba(238, 242, 249, 0.98));
+  color: #10233c;
+  overflow: auto;
+}
+
+.preview-docx > * + * {
+  margin-top: 1rem;
+}
+
+.preview-docx p,
+.preview-docx li {
+  line-height: 1.65;
+}
+
+.preview-docx table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.preview-docx th,
+.preview-docx td {
+  border: 1px solid rgba(16, 35, 60, 0.14);
+  padding: 8px 10px;
+  vertical-align: top;
+}
+
+.preview-docx img {
+  max-width: 100%;
+  height: auto;
+}
+
+.preview-docx-notes {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(16, 35, 60, 0.12);
+}
+
 .annotation-overlay {
   position: absolute;
   inset: 0;

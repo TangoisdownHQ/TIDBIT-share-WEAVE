@@ -23,14 +23,18 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use argon2::password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use clap::Parser;
 use cli::commands::{auth, c2c as cli_c2c, doc, wallet};
 use cli::parser::{Cli, Commands};
 use hmac::{Hmac, Mac};
+use rand::RngCore;
 use serde::Deserialize;
 use serde_json::json;
+use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
 
@@ -79,6 +83,30 @@ struct AppState {
 struct AdminWalletIdentity {
     wallet: String,
     chain: String,
+}
+
+#[derive(Clone)]
+struct AdminCredentialRecord {
+    wallet: String,
+    password_hash: String,
+    mfa_enabled: bool,
+    totp_secret_b32: Option<String>,
+    pending_totp_secret_b32: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Clone)]
+struct AdminConsoleSessionRecord {
+    admin_session_id: String,
+    wallet: String,
+    chain: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_seen_at: chrono::DateTime<chrono::Utc>,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    device_id: Option<String>,
+    user_agent: Option<String>,
+    ip_address: Option<String>,
 }
 
 struct DocumentAccessRecord {
@@ -225,6 +253,14 @@ async fn start_server() -> anyhow::Result<()> {
         )
         .route("/api/agent/:id/revoke", post(revoke_agent_handler))
         .route("/api/admin/access", get(admin_access_handler))
+        .route("/api/admin/auth/status", get(admin_auth_status_handler))
+        .route("/api/admin/auth/bootstrap", post(admin_auth_bootstrap_handler))
+        .route("/api/admin/auth/login", post(admin_auth_login_handler))
+        .route("/api/admin/auth/logout", post(admin_auth_logout_handler))
+        .route("/api/admin/auth/password", post(admin_auth_change_password_handler))
+        .route("/api/admin/auth/mfa/enroll", post(admin_auth_mfa_enroll_handler))
+        .route("/api/admin/auth/mfa/verify", post(admin_auth_mfa_verify_handler))
+        .route("/api/admin/auth/mfa/disable", post(admin_auth_mfa_disable_handler))
         .route(
             "/api/admin/growth/overview",
             get(admin_growth_overview_handler),
@@ -734,6 +770,53 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     .await?;
     sqlx::query(
         r#"
+        create table if not exists admin_credentials (
+            wallet text primary key,
+            password_hash text not null,
+            mfa_enabled boolean not null default false,
+            totp_secret_b32 text null,
+            pending_totp_secret_b32 text null,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query("alter table admin_credentials add column if not exists mfa_enabled boolean not null default false")
+        .execute(db)
+        .await?;
+    sqlx::query("alter table admin_credentials add column if not exists totp_secret_b32 text null")
+        .execute(db)
+        .await?;
+    sqlx::query("alter table admin_credentials add column if not exists pending_totp_secret_b32 text null")
+        .execute(db)
+        .await?;
+    sqlx::query(
+        r#"
+        create table if not exists admin_console_sessions (
+            admin_session_id text primary key,
+            wallet text not null,
+            chain text not null,
+            created_at timestamptz not null default now(),
+            last_seen_at timestamptz not null default now(),
+            expires_at timestamptz not null,
+            revoked_at timestamptz null,
+            device_id text null,
+            user_agent text null,
+            ip_address text null
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_admin_console_sessions_wallet_active on admin_console_sessions (wallet, expires_at desc) where revoked_at is null",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
         alter table document_shares
             add column if not exists access_token_hash text,
             add column if not exists expires_at timestamptz,
@@ -804,6 +887,388 @@ fn clamp_admin_days(days: Option<i64>) -> i64 {
     days.unwrap_or(30).clamp(7, 180)
 }
 
+#[derive(Deserialize)]
+struct AdminAuthBootstrapRequest {
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct AdminAuthLoginRequest {
+    password: String,
+    totp_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AdminAuthChangePasswordRequest {
+    current_password: String,
+    new_password: String,
+    totp_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AdminAuthMfaEnrollRequest {
+    current_password: String,
+}
+
+#[derive(Deserialize)]
+struct AdminAuthMfaVerifyRequest {
+    current_password: String,
+    totp_code: String,
+}
+
+#[derive(Deserialize)]
+struct AdminAuthMfaDisableRequest {
+    current_password: String,
+    totp_code: String,
+}
+
+fn admin_console_session_hours() -> i64 {
+    std::env::var("ADMIN_CONSOLE_SESSION_HOURS")
+        .ok()
+        .and_then(|value| value.trim().parse::<i64>().ok())
+        .unwrap_or(12)
+        .clamp(1, 24 * 7)
+}
+
+fn admin_console_password_min_length() -> usize {
+    12
+}
+
+fn admin_session_header(headers: &HeaderMap) -> Option<String> {
+    header_value(headers, "x-admin-session-id")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_admin_password_strength(password: &str) -> Result<(), AppError> {
+    if password.trim().len() < admin_console_password_min_length() {
+        return Err(AppError::BadRequest(format!(
+            "Admin password must be at least {} characters",
+            admin_console_password_min_length()
+        )));
+    }
+    Ok(())
+}
+
+fn hash_admin_password(password: &str) -> Result<String, AppError> {
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|err| AppError::Internal(format!("admin password hash failed: {err}")))
+}
+
+fn verify_admin_password(hash: &str, password: &str) -> Result<bool, AppError> {
+    let parsed = PasswordHash::new(hash)
+        .map_err(|err| AppError::Internal(format!("stored admin password hash invalid: {err}")))?;
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
+}
+
+fn random_admin_session_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+fn normalize_totp_code(value: &str) -> String {
+    value.chars().filter(|ch| ch.is_ascii_digit()).collect()
+}
+
+fn base32_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut output = String::new();
+    let mut buffer: u16 = 0;
+    let mut bits_left = 0u8;
+
+    for byte in bytes {
+        buffer = (buffer << 8) | u16::from(*byte);
+        bits_left += 8;
+        while bits_left >= 5 {
+            let idx = ((buffer >> (bits_left - 5)) & 0x1f) as usize;
+            output.push(ALPHABET[idx] as char);
+            bits_left -= 5;
+        }
+    }
+
+    if bits_left > 0 {
+        let idx = ((buffer << (5 - bits_left)) & 0x1f) as usize;
+        output.push(ALPHABET[idx] as char);
+    }
+
+    output
+}
+
+fn base32_decode(input: &str) -> Result<Vec<u8>, AppError> {
+    let mut buffer: u32 = 0;
+    let mut bits_left = 0u8;
+    let mut output = Vec::new();
+
+    for ch in input.chars() {
+        if ch == '=' || ch.is_ascii_whitespace() || ch == '-' {
+            continue;
+        }
+        let value = match ch.to_ascii_uppercase() {
+            'A'..='Z' => ch.to_ascii_uppercase() as u8 - b'A',
+            '2'..='7' => ch as u8 - b'2' + 26,
+            _ => {
+                return Err(AppError::BadRequest(
+                    "TOTP secret contains invalid Base32 characters".into(),
+                ))
+            }
+        };
+        buffer = (buffer << 5) | u32::from(value);
+        bits_left += 5;
+        while bits_left >= 8 {
+            output.push(((buffer >> (bits_left - 8)) & 0xff) as u8);
+            bits_left -= 8;
+        }
+    }
+
+    Ok(output)
+}
+
+fn generate_totp_secret_b32() -> String {
+    let mut bytes = [0u8; 20];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base32_encode(&bytes)
+}
+
+fn compute_totp_code(secret_b32: &str, unix_ts: i64) -> Result<String, AppError> {
+    let secret = base32_decode(secret_b32)?;
+    let counter = (unix_ts.max(0) as u64) / 30;
+    let mut mac = Hmac::<Sha1>::new_from_slice(&secret)
+        .map_err(|err| AppError::Internal(format!("totp hmac init failed: {err}")))?;
+    mac.update(&counter.to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    let offset = usize::from(digest[digest.len() - 1] & 0x0f);
+    let binary = ((u32::from(digest[offset]) & 0x7f) << 24)
+        | (u32::from(digest[offset + 1]) << 16)
+        | (u32::from(digest[offset + 2]) << 8)
+        | u32::from(digest[offset + 3]);
+    Ok(format!("{:06}", binary % 1_000_000))
+}
+
+fn verify_totp_code(secret_b32: &str, code: &str) -> Result<bool, AppError> {
+    let normalized = normalize_totp_code(code);
+    if normalized.len() != 6 {
+        return Ok(false);
+    }
+    let now = chrono::Utc::now().timestamp();
+    for offset in -1..=1 {
+        let candidate = compute_totp_code(secret_b32, now + (offset * 30))?;
+        if candidate == normalized {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn admin_totp_otpauth_url(wallet: &str, secret_b32: &str) -> String {
+    let issuer = "TIDBIT-share-WEAVE";
+    let label = format!("{issuer}:{wallet}");
+    format!(
+        "otpauth://totp/{}?secret={}&issuer={}&algorithm=SHA1&digits=6&period=30",
+        urlencoding::encode(&label),
+        secret_b32,
+        urlencoding::encode(issuer)
+    )
+}
+
+async fn load_admin_credential(
+    db: &PgPool,
+    wallet: &str,
+) -> Result<Option<AdminCredentialRecord>, AppError> {
+    let row = sqlx::query(
+        r#"
+        select wallet, password_hash, mfa_enabled, totp_secret_b32, pending_totp_secret_b32, created_at, updated_at
+        from admin_credentials
+        where wallet = $1
+        "#,
+    )
+    .bind(wallet)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(row.map(|row| AdminCredentialRecord {
+        wallet: row.get("wallet"),
+        password_hash: row.get("password_hash"),
+        mfa_enabled: row.get("mfa_enabled"),
+        totp_secret_b32: row.get("totp_secret_b32"),
+        pending_totp_secret_b32: row.get("pending_totp_secret_b32"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }))
+}
+
+async fn load_active_admin_console_session(
+    db: &PgPool,
+    admin_session_id: &str,
+) -> Result<Option<AdminConsoleSessionRecord>, AppError> {
+    let row = sqlx::query(
+        r#"
+        select admin_session_id, wallet, chain, created_at, last_seen_at, expires_at, device_id, user_agent, ip_address
+        from admin_console_sessions
+        where admin_session_id = $1
+          and revoked_at is null
+          and expires_at > now()
+        "#,
+    )
+    .bind(admin_session_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(row.map(|row| AdminConsoleSessionRecord {
+        admin_session_id: row.get("admin_session_id"),
+        wallet: row.get("wallet"),
+        chain: row.get("chain"),
+        created_at: row.get("created_at"),
+        last_seen_at: row.get("last_seen_at"),
+        expires_at: row.get("expires_at"),
+        device_id: row.get("device_id"),
+        user_agent: row.get("user_agent"),
+        ip_address: row.get("ip_address"),
+    }))
+}
+
+async fn create_admin_console_session(
+    db: &PgPool,
+    session: &WalletSession,
+    headers: &HeaderMap,
+) -> Result<AdminConsoleSessionRecord, AppError> {
+    let admin_session_id = random_admin_session_id();
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(admin_console_session_hours());
+    let created = sqlx::query(
+        r#"
+        insert into admin_console_sessions (
+            admin_session_id, wallet, chain, expires_at, device_id, user_agent, ip_address
+        )
+        values ($1, $2, $3, $4, $5, $6, $7)
+        returning admin_session_id, wallet, chain, created_at, last_seen_at, expires_at, device_id, user_agent, ip_address
+        "#,
+    )
+    .bind(&admin_session_id)
+    .bind(&session.wallet)
+    .bind(&session.chain)
+    .bind(expires_at)
+    .bind(header_value(headers, "x-device-id"))
+    .bind(header_value(headers, "user-agent"))
+    .bind(header_value(headers, "x-forwarded-for"))
+    .fetch_one(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(AdminConsoleSessionRecord {
+        admin_session_id: created.get("admin_session_id"),
+        wallet: created.get("wallet"),
+        chain: created.get("chain"),
+        created_at: created.get("created_at"),
+        last_seen_at: created.get("last_seen_at"),
+        expires_at: created.get("expires_at"),
+        device_id: created.get("device_id"),
+        user_agent: created.get("user_agent"),
+        ip_address: created.get("ip_address"),
+    })
+}
+
+async fn revoke_admin_console_sessions_for_wallet(
+    db: &PgPool,
+    wallet: &str,
+    keep_admin_session_id: Option<&str>,
+) -> Result<(), AppError> {
+    if let Some(keep) = keep_admin_session_id {
+        sqlx::query(
+            "update admin_console_sessions set revoked_at = now() where wallet = $1 and revoked_at is null and admin_session_id <> $2",
+        )
+        .bind(wallet)
+        .bind(keep)
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    } else {
+        sqlx::query(
+            "update admin_console_sessions set revoked_at = now() where wallet = $1 and revoked_at is null",
+        )
+        .bind(wallet)
+        .execute(db)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+    Ok(())
+}
+
+async fn maybe_load_admin_console_session_for_wallet(
+    db: &PgPool,
+    headers: &HeaderMap,
+    session: &WalletSession,
+) -> Result<Option<AdminConsoleSessionRecord>, AppError> {
+    let Some(admin_session_id) = admin_session_header(headers) else {
+        return Ok(None);
+    };
+    let Some(record) = load_active_admin_console_session(db, &admin_session_id).await? else {
+        return Ok(None);
+    };
+    if record.wallet != session.wallet {
+        return Ok(None);
+    }
+    Ok(Some(record))
+}
+
+async fn require_admin_console_access(
+    st: &AppState,
+    headers: &HeaderMap,
+) -> Result<(WalletSession, AdminConsoleSessionRecord), AppError> {
+    let session = require_admin_session(st, headers).await?;
+    let admin_session_id = admin_session_header(headers).ok_or_else(|| {
+        AppError::Auth("Admin password verification is required for this console".into())
+    })?;
+    let record = load_active_admin_console_session(&st.db, &admin_session_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Auth("Admin password verification is required for this console".into())
+        })?;
+
+    if record.wallet != session.wallet {
+        return Err(AppError::Auth(
+            "Admin verification does not match the active wallet session".into(),
+        ));
+    }
+
+    sqlx::query(
+        "update admin_console_sessions set last_seen_at = now() where admin_session_id = $1",
+    )
+    .bind(&record.admin_session_id)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok((session, record))
+}
+
+fn admin_auth_status_json(
+    console_path: &str,
+    wallet_session: &WalletSession,
+    credential: Option<&AdminCredentialRecord>,
+    admin_session: Option<&AdminConsoleSessionRecord>,
+) -> serde_json::Value {
+    json!({
+        "ok": true,
+        "wallet": wallet_session.wallet,
+        "chain": wallet_session.chain,
+        "username": wallet_session.wallet,
+        "console_path": console_path,
+        "password_configured": credential.is_some(),
+        "mfa_enabled": credential.map(|item| item.mfa_enabled).unwrap_or(false),
+        "mfa_pending": credential
+            .and_then(|item| item.pending_totp_secret_b32.as_ref())
+            .is_some(),
+        "admin_session_active": admin_session.is_some(),
+        "admin_session_expires_at": admin_session.map(|item| item.expires_at),
+        "needs_setup": credential.is_none()
+    })
+}
+
 async fn admin_console_handler() -> Response {
     (
         StatusCode::OK,
@@ -835,12 +1300,312 @@ async fn admin_access_handler(
     })))
 }
 
+async fn admin_auth_status_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_admin_session(&st, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet).await?;
+    let admin_session = maybe_load_admin_console_session_for_wallet(&st.db, &headers, &session).await?;
+
+    Ok(Json(admin_auth_status_json(
+        &st.admin_console_path,
+        &session,
+        credential.as_ref(),
+        admin_session.as_ref(),
+    )))
+}
+
+async fn admin_auth_bootstrap_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminAuthBootstrapRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_admin_session(&st, &headers).await?;
+    if load_admin_credential(&st.db, &session.wallet).await?.is_some() {
+        return Err(AppError::BadRequest(
+            "Admin password already exists for this wallet".into(),
+        ));
+    }
+
+    validate_admin_password_strength(&body.password)?;
+    let password_hash = hash_admin_password(&body.password)?;
+    sqlx::query(
+        r#"
+        insert into admin_credentials (wallet, password_hash)
+        values ($1, $2)
+        "#,
+    )
+    .bind(&session.wallet)
+    .bind(password_hash)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let admin_session = create_admin_console_session(&st.db, &session, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::Internal("Admin credential was not persisted".into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "admin_session_id": admin_session.admin_session_id,
+        "admin_session_expires_at": admin_session.expires_at,
+        "status": admin_auth_status_json(&st.admin_console_path, &session, Some(&credential), Some(&admin_session))
+    })))
+}
+
+async fn admin_auth_login_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminAuthLoginRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_admin_session(&st, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Set an admin password for this wallet first".into()))?;
+
+    if !verify_admin_password(&credential.password_hash, &body.password)? {
+        return Err(AppError::Forbidden("Admin password is incorrect".into()));
+    }
+
+    if credential.mfa_enabled {
+        let secret = credential.totp_secret_b32.as_deref().ok_or_else(|| {
+            AppError::Internal("Admin MFA is enabled but no TOTP secret is stored".into())
+        })?;
+        let provided_code = body.totp_code.as_deref().ok_or_else(|| {
+            AppError::BadRequest("A 6-digit MFA code is required for this admin wallet".into())
+        })?;
+        if !verify_totp_code(secret, provided_code)? {
+            return Err(AppError::Forbidden("Admin MFA code is incorrect".into()));
+        }
+    }
+
+    let admin_session = create_admin_console_session(&st.db, &session, &headers).await?;
+    revoke_admin_console_sessions_for_wallet(&st.db, &session.wallet, Some(&admin_session.admin_session_id))
+        .await?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "admin_session_id": admin_session.admin_session_id,
+        "admin_session_expires_at": admin_session.expires_at,
+        "status": admin_auth_status_json(&st.admin_console_path, &session, Some(&credential), Some(&admin_session))
+    })))
+}
+
+async fn admin_auth_logout_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_admin_session(&st, &headers).await?;
+    if let Some(admin_session_id) = admin_session_header(&headers) {
+        sqlx::query(
+            "update admin_console_sessions set revoked_at = now() where admin_session_id = $1 and wallet = $2 and revoked_at is null",
+        )
+        .bind(admin_session_id)
+        .bind(&session.wallet)
+        .execute(&st.db)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn admin_auth_change_password_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminAuthChangePasswordRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (session, admin_session) = require_admin_console_access(&st, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Set an admin password for this wallet first".into()))?;
+
+    if !verify_admin_password(&credential.password_hash, &body.current_password)? {
+        return Err(AppError::Forbidden("Current admin password is incorrect".into()));
+    }
+    if credential.mfa_enabled {
+        let secret = credential.totp_secret_b32.as_deref().ok_or_else(|| {
+            AppError::Internal("Admin MFA is enabled but no TOTP secret is stored".into())
+        })?;
+        let totp_code = body.totp_code.as_deref().ok_or_else(|| {
+            AppError::BadRequest("A 6-digit MFA code is required to change the admin password".into())
+        })?;
+        if !verify_totp_code(secret, totp_code)? {
+            return Err(AppError::Forbidden("Admin MFA code is incorrect".into()));
+        }
+    }
+
+    validate_admin_password_strength(&body.new_password)?;
+    let new_hash = hash_admin_password(&body.new_password)?;
+    sqlx::query(
+        "update admin_credentials set password_hash = $2, updated_at = now() where wallet = $1",
+    )
+    .bind(&session.wallet)
+    .bind(new_hash)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    revoke_admin_console_sessions_for_wallet(&st.db, &session.wallet, Some(&admin_session.admin_session_id))
+        .await?;
+
+    let refreshed = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::Internal("Admin credential disappeared after password change".into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "message": "Admin password updated",
+        "status": admin_auth_status_json(&st.admin_console_path, &session, Some(&refreshed), Some(&admin_session))
+    })))
+}
+
+async fn admin_auth_mfa_enroll_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminAuthMfaEnrollRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (session, admin_session) = require_admin_console_access(&st, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Set an admin password for this wallet first".into()))?;
+
+    if !verify_admin_password(&credential.password_hash, &body.current_password)? {
+        return Err(AppError::Forbidden("Current admin password is incorrect".into()));
+    }
+
+    let secret_b32 = generate_totp_secret_b32();
+    let otpauth_url = admin_totp_otpauth_url(&session.wallet, &secret_b32);
+    sqlx::query(
+        "update admin_credentials set pending_totp_secret_b32 = $2, updated_at = now() where wallet = $1",
+    )
+    .bind(&session.wallet)
+    .bind(&secret_b32)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let refreshed = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::Internal("Admin credential disappeared during MFA enrollment".into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "secret_b32": secret_b32,
+        "otpauth_url": otpauth_url,
+        "status": admin_auth_status_json(&st.admin_console_path, &session, Some(&refreshed), Some(&admin_session))
+    })))
+}
+
+async fn admin_auth_mfa_verify_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminAuthMfaVerifyRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (session, _admin_session) = require_admin_console_access(&st, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Set an admin password for this wallet first".into()))?;
+
+    if !verify_admin_password(&credential.password_hash, &body.current_password)? {
+        return Err(AppError::Forbidden("Current admin password is incorrect".into()));
+    }
+
+    let pending_secret = credential
+        .pending_totp_secret_b32
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("Start MFA enrollment before verifying a code".into()))?;
+    if !verify_totp_code(pending_secret, &body.totp_code)? {
+        return Err(AppError::Forbidden("Admin MFA code is incorrect".into()));
+    }
+
+    sqlx::query(
+        r#"
+        update admin_credentials
+        set
+            totp_secret_b32 = $2,
+            pending_totp_secret_b32 = null,
+            mfa_enabled = true,
+            updated_at = now()
+        where wallet = $1
+        "#,
+    )
+    .bind(&session.wallet)
+    .bind(pending_secret)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    revoke_admin_console_sessions_for_wallet(&st.db, &session.wallet, None).await?;
+
+    let refreshed = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::Internal("Admin credential disappeared after enabling MFA".into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "message": "MFA enabled. Sign in again with password and TOTP.",
+        "status": admin_auth_status_json(&st.admin_console_path, &session, Some(&refreshed), None)
+    })))
+}
+
+async fn admin_auth_mfa_disable_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AdminAuthMfaDisableRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let (session, admin_session) = require_admin_console_access(&st, &headers).await?;
+    let credential = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::BadRequest("Set an admin password for this wallet first".into()))?;
+
+    if !credential.mfa_enabled {
+        return Err(AppError::BadRequest("MFA is not enabled for this admin wallet".into()));
+    }
+    if !verify_admin_password(&credential.password_hash, &body.current_password)? {
+        return Err(AppError::Forbidden("Current admin password is incorrect".into()));
+    }
+    let secret = credential.totp_secret_b32.as_deref().ok_or_else(|| {
+        AppError::Internal("Admin MFA is enabled but no TOTP secret is stored".into())
+    })?;
+    if !verify_totp_code(secret, &body.totp_code)? {
+        return Err(AppError::Forbidden("Admin MFA code is incorrect".into()));
+    }
+
+    sqlx::query(
+        r#"
+        update admin_credentials
+        set
+            mfa_enabled = false,
+            totp_secret_b32 = null,
+            pending_totp_secret_b32 = null,
+            updated_at = now()
+        where wallet = $1
+        "#,
+    )
+    .bind(&session.wallet)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+    revoke_admin_console_sessions_for_wallet(&st.db, &session.wallet, Some(&admin_session.admin_session_id))
+        .await?;
+
+    let refreshed = load_admin_credential(&st.db, &session.wallet)
+        .await?
+        .ok_or_else(|| AppError::Internal("Admin credential disappeared after disabling MFA".into()))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "message": "MFA disabled",
+        "status": admin_auth_status_json(&st.admin_console_path, &session, Some(&refreshed), Some(&admin_session))
+    })))
+}
+
 async fn admin_growth_overview_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<AdminGrowthQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = require_admin_session(&st, &headers).await?;
+    let (session, _) = require_admin_console_access(&st, &headers).await?;
     let days = clamp_admin_days(query.days);
     let days_i32 = days as i32;
 
@@ -6727,8 +7492,11 @@ async fn public_verify_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        bool_from_form_text, build_share_event_payload, document_sign_message,
-        normalize_annotation_fields, wallet_can_access_document,
+        admin_console_password_min_length, admin_totp_otpauth_url, base32_decode,
+        base32_encode, bool_from_form_text, build_share_event_payload, compute_totp_code,
+        document_sign_message, hash_admin_password, normalize_annotation_fields,
+        normalize_totp_code, validate_admin_password_strength, verify_admin_password,
+        verify_totp_code, wallet_can_access_document,
     };
     use crate::models::SignerAnnotationField;
 
@@ -6801,5 +7569,40 @@ mod tests {
         assert_eq!(fields[0].value.as_deref(), Some("Signed"));
         assert_eq!(fields[0].x_pct, 100.0);
         assert_eq!(fields[0].y_pct, 0.0);
+    }
+
+    #[test]
+    fn admin_password_strength_and_hash_verification_work() {
+        let short_password = "short-pass";
+        let valid_password = "admin-password-123";
+
+        assert!(validate_admin_password_strength(short_password).is_err());
+        assert_eq!(admin_console_password_min_length(), 12);
+        validate_admin_password_strength(valid_password).unwrap();
+
+        let hash = hash_admin_password(valid_password).unwrap();
+        assert_ne!(hash, valid_password);
+        assert!(verify_admin_password(&hash, valid_password).unwrap());
+        assert!(!verify_admin_password(&hash, "wrong-password-123").unwrap());
+    }
+
+    #[test]
+    fn totp_helpers_round_trip_and_accept_current_code() {
+        let raw_secret = b"admin totp secret!";
+        let secret_b32 = base32_encode(raw_secret);
+
+        assert_eq!(base32_decode(&secret_b32).unwrap(), raw_secret);
+        assert_eq!(normalize_totp_code(" 123-456 "), "123456");
+
+        let now = chrono::Utc::now().timestamp();
+        let current_code = compute_totp_code(&secret_b32, now).unwrap();
+        assert_eq!(current_code.len(), 6);
+        assert!(verify_totp_code(&secret_b32, &current_code).unwrap());
+        assert!(!verify_totp_code(&secret_b32, "000000").unwrap());
+
+        let otpauth = admin_totp_otpauth_url("evm:0xabc", &secret_b32);
+        assert!(otpauth.starts_with("otpauth://totp/"));
+        assert!(otpauth.contains("secret="));
+        assert!(otpauth.contains("issuer=TIDBIT-share-WEAVE"));
     }
 }

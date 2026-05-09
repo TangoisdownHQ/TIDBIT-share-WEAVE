@@ -1,9 +1,24 @@
 const API = window.location.origin.startsWith("http")
   ? window.location.origin
   : "http://127.0.0.1:4100";
+const ADMIN_SESSION_STORAGE = "TIDBIT_ADMIN_SESSION_ID";
+let pendingAdminMfaSecret = null;
+let pendingAdminMfaUrl = null;
 
 function getSessionId() {
   return localStorage.getItem("TIDBIT_SESSION_ID");
+}
+
+function getAdminSessionId() {
+  return localStorage.getItem(ADMIN_SESSION_STORAGE);
+}
+
+function saveAdminSessionId(sessionId) {
+  localStorage.setItem(ADMIN_SESSION_STORAGE, sessionId);
+}
+
+function clearAdminSession() {
+  localStorage.removeItem(ADMIN_SESSION_STORAGE);
 }
 
 function clearSession() {
@@ -25,13 +40,29 @@ function getDeviceId() {
 function authHeaders(extra = {}) {
   const headers = { ...extra };
   const sid = getSessionId();
+  const adminSid = getAdminSessionId();
   if (sid) headers["x-session-id"] = sid;
+  if (adminSid) headers["x-admin-session-id"] = adminSid;
   headers["x-device-id"] = getDeviceId();
   return headers;
 }
 
 async function apiGet(path) {
-  const resp = await fetch(`${API}${path}`, { headers: authHeaders() });
+  const resp = await fetch(`${API}${path}`, { headers: authHeaders(), cache: "no-store" });
+  if (!resp.ok) {
+    const err = new Error(await resp.text());
+    err.status = resp.status;
+    throw err;
+  }
+  return resp.json();
+}
+
+async function apiPost(path, body) {
+  const resp = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body || {}),
+  });
   if (!resp.ok) {
     const err = new Error(await resp.text());
     err.status = resp.status;
@@ -42,6 +73,14 @@ async function apiGet(path) {
 
 async function logout() {
   try {
+    await fetch(`${API}/api/admin/auth/logout`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+  } catch (_) {
+    // Ignore admin logout transport errors and continue with wallet logout.
+  }
+  try {
     await fetch(`${API}/auth/logout`, {
       method: "POST",
       headers: authHeaders(),
@@ -49,8 +88,22 @@ async function logout() {
   } catch (_) {
     // Ignore logout transport errors and still clear the local session.
   }
+  clearAdminSession();
   clearSession();
   window.location.replace("/index.html");
+}
+
+async function lockAdminConsole() {
+  try {
+    await fetch(`${API}/api/admin/auth/logout`, {
+      method: "POST",
+      headers: authHeaders(),
+    });
+  } catch (_) {
+    // Ignore transport failures and still clear the local admin session.
+  }
+  clearAdminSession();
+  window.location.reload();
 }
 
 function createElement(tag, options = {}) {
@@ -109,8 +162,64 @@ function formatPercent(part, total) {
   return `${Math.round((part / total) * 100)}%`;
 }
 
+function toggleHidden(id, shouldShow) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle("hidden", !shouldShow);
+}
+
+function setFieldValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value || "";
+}
+
+function getFieldValue(id) {
+  return document.getElementById(id)?.value?.trim() || "";
+}
+
+function fillAdminUsernames(wallet) {
+  [
+    "adminSetupUsername",
+    "adminLoginUsername",
+    "adminChangePasswordUsername",
+    "adminMfaUsername",
+  ].forEach((id) => setFieldValue(id, wallet));
+}
+
+function clearAdminForms() {
+  [
+    "adminSetupPassword",
+    "adminSetupPasswordConfirm",
+    "adminLoginPassword",
+    "adminLoginTotp",
+    "adminCurrentPassword",
+    "adminNewPassword",
+    "adminNewPasswordConfirm",
+    "adminPasswordTotp",
+    "adminMfaPassword",
+    "adminMfaVerifyPassword",
+    "adminMfaVerifyCode",
+    "adminMfaDisablePassword",
+    "adminMfaDisableCode",
+  ].forEach((id) => setFieldValue(id, ""));
+}
+
 function setStatus(message, isError = false) {
   const root = document.getElementById("adminStatus");
+  if (!root) return;
+  root.className = isError ? "session-card admin-error" : "session-card";
+  root.textContent = message;
+}
+
+function setSecurityStatus(message, isError = false) {
+  const root = document.getElementById("adminSecurityStatus");
+  if (!root) return;
+  root.className = isError ? "session-card admin-error" : "session-card";
+  root.textContent = message;
+}
+
+function setMfaStatus(message, isError = false) {
+  const root = document.getElementById("adminMfaStatus");
   if (!root) return;
   root.className = isError ? "session-card admin-error" : "session-card";
   root.textContent = message;
@@ -504,14 +613,221 @@ function renderRecentEvents(items) {
   );
 }
 
+function renderAdminAuthGate(status) {
+  fillAdminUsernames(status.wallet);
+  const gate = document.getElementById("adminAuthGate");
+  const message = document.getElementById("adminAuthMessage");
+  if (!gate || !message) return;
+
+  if (status.admin_session_active) {
+    gate.classList.add("hidden");
+    return;
+  }
+
+  gate.classList.remove("hidden");
+  toggleHidden("adminAuthSetup", Boolean(status.needs_setup));
+  toggleHidden("adminAuthLogin", !status.needs_setup);
+  toggleHidden("adminLoginTotpRow", !status.needs_setup && Boolean(status.mfa_enabled));
+
+  if (status.needs_setup) {
+    message.className = "session-card";
+    message.textContent = "Admin wallet confirmed. Create a password for this wallet to unlock the console.";
+    return;
+  }
+
+  message.className = "session-card";
+  message.textContent = status.mfa_enabled
+    ? "Wallet confirmed. Enter the admin password and a 6-digit TOTP code to unlock the console."
+    : "Wallet confirmed. Enter the admin password tied to this wallet to unlock the console.";
+}
+
+function renderSecurityControls(status) {
+  fillAdminUsernames(status.wallet);
+  toggleHidden("adminSecuritySection", Boolean(status.password_configured && status.admin_session_active));
+  toggleHidden("adminPasswordTotpRow", Boolean(status.password_configured && status.mfa_enabled));
+  toggleHidden("adminMfaEnrollBlock", Boolean(status.password_configured && status.admin_session_active && !status.mfa_enabled));
+  toggleHidden("adminMfaEnabledBlock", Boolean(status.password_configured && status.admin_session_active && status.mfa_enabled));
+  toggleHidden("adminMfaVerifyBlock", Boolean(status.password_configured && status.admin_session_active && pendingAdminMfaSecret));
+
+  if (!status.password_configured) {
+    setSecurityStatus("No admin password exists for this wallet yet. Create it above.", false);
+    setMfaStatus("MFA becomes available after an admin password is set and the console is unlocked.", false);
+    return;
+  }
+
+  setSecurityStatus(
+    status.admin_session_active
+      ? `Secondary admin auth is active. Username is your wallet address and this console unlock expires ${formatDateTime(status.admin_session_expires_at)}.`
+      : "Secondary admin auth is required before security settings and analytics data are available.",
+    false
+  );
+
+  if (pendingAdminMfaSecret) {
+    const secretRoot = document.getElementById("adminMfaSecret");
+    const urlRoot = document.getElementById("adminMfaOtpauth");
+    if (secretRoot) secretRoot.textContent = pendingAdminMfaSecret;
+    if (urlRoot) {
+      urlRoot.textContent = pendingAdminMfaUrl || "";
+      urlRoot.href = pendingAdminMfaUrl || "#";
+    }
+    setMfaStatus("Scan or save the pending MFA secret, then verify one 6-digit code to finish enrollment.", false);
+    return;
+  }
+
+  if (status.mfa_enabled) {
+    setMfaStatus("MFA is enabled for this admin wallet. A valid 6-digit TOTP code is required on login.", false);
+    return;
+  }
+
+  if (status.mfa_pending) {
+    setMfaStatus("MFA enrollment is pending on this wallet. Start enrollment again to generate a fresh secret if you lost the previous one.", false);
+    return;
+  }
+
+  setMfaStatus("MFA is currently disabled. You can generate a TOTP secret and verify one code to turn it on.", false);
+}
+
+function persistAdminLogin(result) {
+  if (result?.admin_session_id) {
+    saveAdminSessionId(result.admin_session_id);
+  }
+  if (result?.status?.mfa_pending === false) {
+    pendingAdminMfaSecret = null;
+    pendingAdminMfaUrl = null;
+  }
+}
+
+async function submitAdminSetup() {
+  const password = getFieldValue("adminSetupPassword");
+  const confirmPassword = getFieldValue("adminSetupPasswordConfirm");
+  if (!password) {
+    setStatus("Set an admin password before continuing.", true);
+    return;
+  }
+  if (password !== confirmPassword) {
+    setStatus("The new admin passwords do not match.", true);
+    return;
+  }
+  const result = await apiPost("/api/admin/auth/bootstrap", { password });
+  persistAdminLogin(result);
+  clearAdminForms();
+  await loadAdminConsole();
+}
+
+async function submitAdminLogin() {
+  const password = getFieldValue("adminLoginPassword");
+  const totpCode = getFieldValue("adminLoginTotp");
+  if (!password) {
+    setStatus("Enter the admin password for this wallet.", true);
+    return;
+  }
+  const result = await apiPost("/api/admin/auth/login", {
+    password,
+    totp_code: totpCode || null,
+  });
+  persistAdminLogin(result);
+  clearAdminForms();
+  await loadAdminConsole();
+}
+
+async function submitAdminPasswordChange() {
+  const currentPassword = getFieldValue("adminCurrentPassword");
+  const newPassword = getFieldValue("adminNewPassword");
+  const confirmPassword = getFieldValue("adminNewPasswordConfirm");
+  const totpCode = getFieldValue("adminPasswordTotp");
+  if (!currentPassword || !newPassword) {
+    setSecurityStatus("Enter the current and new admin passwords.", true);
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    setSecurityStatus("The new admin passwords do not match.", true);
+    return;
+  }
+  const result = await apiPost("/api/admin/auth/password", {
+    current_password: currentPassword,
+    new_password: newPassword,
+    totp_code: totpCode || null,
+  });
+  setSecurityStatus(result.message || "Admin password updated.");
+  clearAdminForms();
+  await loadAdminConsole();
+}
+
+async function startAdminMfaEnrollment() {
+  const currentPassword = getFieldValue("adminMfaPassword");
+  if (!currentPassword) {
+    setMfaStatus("Enter the current admin password to generate an MFA secret.", true);
+    return;
+  }
+  const result = await apiPost("/api/admin/auth/mfa/enroll", {
+    current_password: currentPassword,
+  });
+  pendingAdminMfaSecret = result.secret_b32 || null;
+  pendingAdminMfaUrl = result.otpauth_url || null;
+  clearAdminForms();
+  renderSecurityControls(result.status || {});
+}
+
+async function verifyAdminMfaEnrollment() {
+  const currentPassword = getFieldValue("adminMfaVerifyPassword");
+  const totpCode = getFieldValue("adminMfaVerifyCode");
+  if (!currentPassword || !totpCode) {
+    setMfaStatus("Enter the current admin password and a 6-digit code from your authenticator app.", true);
+    return;
+  }
+  const result = await apiPost("/api/admin/auth/mfa/verify", {
+    current_password: currentPassword,
+    totp_code: totpCode,
+  });
+  pendingAdminMfaSecret = null;
+  pendingAdminMfaUrl = null;
+  clearAdminSession();
+  clearAdminForms();
+  setStatus(result.message || "MFA enabled. Sign in again with password and code.");
+  await loadAdminConsole();
+}
+
+async function disableAdminMfa() {
+  const currentPassword = getFieldValue("adminMfaDisablePassword");
+  const totpCode = getFieldValue("adminMfaDisableCode");
+  if (!currentPassword || !totpCode) {
+    setMfaStatus("Enter the current admin password and a valid 6-digit code to disable MFA.", true);
+    return;
+  }
+  const result = await apiPost("/api/admin/auth/mfa/disable", {
+    current_password: currentPassword,
+    totp_code: totpCode,
+  });
+  pendingAdminMfaSecret = null;
+  pendingAdminMfaUrl = null;
+  clearAdminForms();
+  setMfaStatus(result.message || "MFA disabled.");
+  await loadAdminConsole();
+}
+
 async function loadAdminConsole() {
   const sessionId = getSessionId();
   if (!sessionId) {
+    clearAdminSession();
     setStatus("Wallet login required. Sign in through /app first, then reopen this console path.", true);
     return;
   }
 
   try {
+    const authStatus = await apiGet("/api/admin/auth/status");
+    renderAdminAuthGate(authStatus);
+    renderSecurityControls(authStatus);
+    if (!authStatus.admin_session_active) {
+      document.getElementById("adminContent")?.classList.add("hidden");
+      setStatus(
+        authStatus.needs_setup
+          ? `Admin wallet confirmed for ${maskWallet(authStatus.wallet)}. Create the password for this wallet to continue.`
+          : `Admin wallet confirmed for ${maskWallet(authStatus.wallet)}. Unlock the console to view analytics.`,
+        false
+      );
+      return;
+    }
+
     const session = await apiGet("/auth/session");
     const params = new URLSearchParams(window.location.search);
     const days = Number(params.get("days") || "30");
@@ -537,13 +853,22 @@ async function loadAdminConsole() {
   } catch (error) {
     document.getElementById("adminContent")?.classList.add("hidden");
     if (error.status === 401) {
-      clearSession();
-      setStatus("This browser session is no longer active. Sign in again through /app, then reopen this console path.", true);
+      if (String(error.message || "").includes("Admin password verification")) {
+        clearAdminSession();
+        setStatus("Admin verification expired. Unlock the console again to continue.", true);
+      } else {
+        clearAdminSession();
+        clearSession();
+        setStatus("This browser session is no longer active. Sign in again through /app, then reopen this console path.", true);
+      }
       return;
     }
     if (error.status === 403) {
       setStatus("This wallet is not on the admin allowlist. Set ADMIN_WALLETS for your wallet and redeploy.", true);
       return;
+    }
+    if (error.status === 400 || error.status === 401) {
+      clearAdminSession();
     }
     setStatus(error.message || "Admin console failed to load.", true);
   }
@@ -551,6 +876,13 @@ async function loadAdminConsole() {
 
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("refreshAdminBtn")?.addEventListener("click", () => loadAdminConsole());
+  document.getElementById("lockAdminBtn")?.addEventListener("click", () => lockAdminConsole());
   document.getElementById("logoutAdminBtn")?.addEventListener("click", () => logout());
+  document.getElementById("adminSetupBtn")?.addEventListener("click", () => submitAdminSetup());
+  document.getElementById("adminLoginBtn")?.addEventListener("click", () => submitAdminLogin());
+  document.getElementById("adminChangePasswordBtn")?.addEventListener("click", () => submitAdminPasswordChange());
+  document.getElementById("adminMfaEnrollBtn")?.addEventListener("click", () => startAdminMfaEnrollment());
+  document.getElementById("adminMfaVerifyBtn")?.addEventListener("click", () => verifyAdminMfaEnrollment());
+  document.getElementById("adminMfaDisableBtn")?.addEventListener("click", () => disableAdminMfa());
   loadAdminConsole();
 });

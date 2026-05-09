@@ -14,6 +14,7 @@ let currentDocumentDetails = null;
 let ownedDocumentsCache = [];
 let agentsCache = [];
 let pqWorkerPromise = null;
+let mammothLoaderPromise = null;
 
 const PQ_KEY_STORAGE = "TIDBIT_PQ_MLDSA65_KEYPAIR_V1";
 const PQ_BACKUP_VERSION = 1;
@@ -2570,6 +2571,123 @@ function bindInteractivePreview(stage, overlay) {
   });
 }
 
+function isDocxMimeType(mimeType) {
+  return mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+function buildSafePreviewFragment(html) {
+  const parsed = new DOMParser().parseFromString(html || "", "text/html");
+  const fragment = document.createDocumentFragment();
+  const allowedTags = new Set([
+    "A",
+    "B",
+    "BLOCKQUOTE",
+    "BR",
+    "CODE",
+    "DIV",
+    "EM",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "H5",
+    "H6",
+    "HR",
+    "I",
+    "IMG",
+    "LI",
+    "OL",
+    "P",
+    "PRE",
+    "SPAN",
+    "STRONG",
+    "TABLE",
+    "TBODY",
+    "TD",
+    "TH",
+    "THEAD",
+    "TR",
+    "U",
+    "UL",
+  ]);
+  const allowedAttrs = new Set(["alt", "colspan", "href", "rowspan", "src"]);
+
+  function cloneNodeSafely(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return document.createTextNode(node.textContent || "");
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return null;
+    }
+
+    const tagName = String(node.nodeName || "").toUpperCase();
+    const children = Array.from(node.childNodes)
+      .map((child) => cloneNodeSafely(child))
+      .filter(Boolean);
+
+    if (!allowedTags.has(tagName)) {
+      const wrapper = document.createDocumentFragment();
+      children.forEach((child) => wrapper.appendChild(child));
+      return wrapper;
+    }
+
+    const el = document.createElement(tagName.toLowerCase());
+    Array.from(node.attributes).forEach((attr) => {
+      const name = String(attr.name || "").toLowerCase();
+      if (!allowedAttrs.has(name)) {
+        return;
+      }
+      const value = String(attr.value || "");
+      if ((name === "href" || name === "src") && /^\s*javascript:/i.test(value)) {
+        return;
+      }
+      el.setAttribute(name, value);
+      if (name === "href") {
+        el.setAttribute("target", "_blank");
+        el.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+    children.forEach((child) => el.appendChild(child));
+    return el;
+  }
+
+  Array.from(parsed.body.childNodes)
+    .map((child) => cloneNodeSafely(child))
+    .filter(Boolean)
+    .forEach((child) => fragment.appendChild(child));
+
+  return fragment;
+}
+
+function ensureMammothLoaded() {
+  if (window.mammoth?.convertToHtml) {
+    return Promise.resolve(window.mammoth);
+  }
+  if (mammothLoaderPromise) {
+    return mammothLoaderPromise;
+  }
+
+  mammothLoaderPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/mammoth.browser.min.js";
+    script.async = true;
+    script.onload = () => {
+      if (window.mammoth?.convertToHtml) {
+        resolve(window.mammoth);
+      } else {
+        reject(new Error("DOCX preview library loaded without a usable converter."));
+      }
+    };
+    script.onerror = () => reject(new Error("DOCX preview library failed to load."));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    mammothLoaderPromise = null;
+    throw error;
+  });
+
+  return mammothLoaderPromise;
+}
+
 function renderPreviewNode(blob, mimeType, options = {}) {
   const shell = document.createElement("div");
   shell.className = "preview-shell";
@@ -2612,6 +2730,59 @@ function renderPreviewNode(blob, mimeType, options = {}) {
       pre.textContent = text;
     });
     shell.appendChild(pre);
+  } else if (isDocxMimeType(mimeType)) {
+    const docxRoot = document.createElement("div");
+    docxRoot.className = "preview-docx";
+    docxRoot.appendChild(
+      createElement("div", { className: "doc-meta", text: "Rendering DOCX preview…" })
+    );
+    stage.appendChild(docxRoot);
+    Promise.resolve()
+      .then(() => ensureMammothLoaded())
+      .then(() => blob.arrayBuffer())
+      .then((arrayBuffer) => window.mammoth.convertToHtml({ arrayBuffer }))
+      .then((result) => {
+        docxRoot.replaceChildren(buildSafePreviewFragment(result.value || ""));
+        if (!docxRoot.childNodes.length) {
+          docxRoot.appendChild(
+            createElement("div", {
+              className: "doc-meta",
+              text: "DOCX loaded, but the document did not produce previewable body content.",
+            })
+          );
+        }
+        if (Array.isArray(result.messages) && result.messages.length) {
+          const notes = document.createElement("details");
+          notes.className = "preview-docx-notes";
+          notes.appendChild(createElement("summary", { text: "Conversion notes" }));
+          notes.appendChild(
+            createElement("pre", {
+              text: JSON.stringify(
+                result.messages.map((message) => ({
+                  type: message.type,
+                  message: message.message,
+                })),
+                null,
+                2
+              ),
+            })
+          );
+          docxRoot.appendChild(notes);
+        }
+      })
+      .catch((error) => {
+        docxRoot.replaceChildren(
+          createElement("strong", { text: "DOCX preview unavailable." }),
+          createElement("div", {
+            className: "doc-meta",
+            text: error?.message || "The document could not be rendered inside the app.",
+          }),
+          createElement("div", {
+            className: "doc-meta",
+            text: "You can still use the verified download to inspect the original file locally.",
+          })
+        );
+      });
   } else {
     const fallback = document.createElement("div");
     fallback.className = "preview-fallback";

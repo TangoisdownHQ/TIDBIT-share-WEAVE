@@ -36,6 +36,7 @@ fips204 = "0.4.6"
 # Hashing & EVM-style keys
 sha3 = "0.10"
 sha2 = "0.10"
+sha1 = "0.10"
 k256 = { version = "0.13", features = ["ecdsa"] }
 hex = "0.4"
 base64 = "0.22"
