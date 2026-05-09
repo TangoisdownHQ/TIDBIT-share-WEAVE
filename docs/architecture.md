@@ -116,11 +116,12 @@ This is an important design choice:
 
 1. User logs in with wallet.
 2. Frontend sends multipart upload to `/api/doc/upload`.
-3. Backend creates a document id and PQ envelope structure.
-4. Envelope object is uploaded to Supabase Storage.
-5. Document metadata is inserted into `documents`.
-6. `UPLOAD` event is written into `document_events`.
-7. Optional Arweave anchoring records a tx id on the document.
+3. Browser now creates the PQ envelope for the normal web upload path.
+4. Backend validates the envelope and assigns the real document id into metadata.
+5. Envelope object is uploaded to Supabase Storage.
+6. Document metadata is inserted into `documents`.
+7. `UPLOAD` event is written into `document_events`.
+8. Optional Arweave anchoring records a tx id on the document.
 
 This is where the app begins the formal chain of custody for a file.
 
@@ -151,11 +152,13 @@ For the current PQ web path, the browser bundles a WASM-backed ML-DSA signer. Th
 1. Owner calls `/api/doc/:id/share`.
 2. Backend inserts a `document_shares` row.
 3. Backend creates a signing URL / access token.
-4. If email or SMS is requested, delivery providers may be called.
-5. Backend writes:
+4. Optional Arweave anchoring records a share-issuance hash and tx id.
+5. If email or SMS is requested, delivery providers may be called.
+6. Backend writes:
    - `SHARE`
+   - `SHARE_ANCHORED` or `SHARE_ANCHOR_FAILED`
    - `DELIVERY_DISPATCHED` or `DELIVERY_FAILED`
-6. Recipient sees the file in inbox if wallet routing applies.
+7. Recipient sees the file in inbox if wallet routing applies.
 
 The share flow can create several different outcomes:
 
@@ -264,7 +267,7 @@ That is why the current Rust audit state is now clean.
 
 ### Current Boundaries
 
-- browser-local PQ signing is available, but browser-side PQ encryption is not the default web path yet
+- browser-side PQ encryption is available in the web upload/version path, but decryption custody is still server-managed for the owner wallet
 - object storage is still backed by Supabase
 - on-chain attestation is not the default signature model
 - billing enforcement is not production-complete

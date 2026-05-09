@@ -114,7 +114,7 @@ What they do:
 Purpose:
 
 - create a new stored document record
-- generate the server-managed PQ envelope
+- accept either a browser-built PQ envelope or generate the server-managed PQ envelope
 - upload the envelope blob
 - insert metadata into `documents`
 

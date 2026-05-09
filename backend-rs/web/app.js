@@ -5,6 +5,7 @@ const API = window.location.origin.startsWith("http")
   : "http://127.0.0.1:4100";
 let currentWallet = null;
 let currentChain = null;
+let currentMlkemPublicKey = null;
 let selectedShareDoc = null;
 let reviewDocument = null;
 let selectedVersionParent = null;
@@ -16,6 +17,9 @@ let pqWorkerPromise = null;
 
 const PQ_KEY_STORAGE = "TIDBIT_PQ_MLDSA65_KEYPAIR_V1";
 const PQ_BACKUP_VERSION = 1;
+const CLIENT_ENCRYPTED_UPLOAD_MODE = "browser_pq_envelope_v1";
+const CLIENT_ENCRYPTED_STORAGE_MODE = "pq_envelope_browser_encrypted";
+const CEK_WRAP_INFO = "tidbit-cek-wrap-v1";
 
 // ================== SESSION ==================
 function saveSessionId(sid) {
@@ -95,6 +99,14 @@ function inferWalletChainFromAddress(address) {
   return trimmed.startsWith("0x") ? "evm" : "sol";
 }
 
+function normalizeBase64(value) {
+  const input = String(value || "").trim().replace(/-/g, "+").replace(/_/g, "/");
+  if (!input) return "";
+  const padding = input.length % 4;
+  if (padding === 0) return input;
+  return `${input}${"=".repeat(4 - padding)}`;
+}
+
 function bytesToBase64(bytes) {
   const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = "";
@@ -104,8 +116,12 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+function bytesToBase64Url(bytes) {
+  return bytesToBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
 function base64ToBytes(value) {
-  const binary = atob(value);
+  const binary = atob(normalizeBase64(value));
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
     bytes[index] = binary.charCodeAt(index);
@@ -127,11 +143,24 @@ function randomBase64(len) {
   return bytesToBase64(randomBytes(len));
 }
 
+function hexStringFromBytes(bytes) {
+  return Array.from(bytes || [])
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 async function sha256Hex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest))
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function sha3Hex(bytes) {
+  if (typeof sha3_256 !== "function") {
+    throw new Error("SHA3 helper unavailable in this browser session.");
+  }
+  return sha3_256(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
 }
 
 async function pqKeyFingerprint(publicKeyB64) {
@@ -206,6 +235,158 @@ async function getPqWorker() {
 async function callPqWorker(action, payload = {}) {
   const worker = await getPqWorker();
   return worker.call(action, payload);
+}
+
+function pendingLogicalId() {
+  return typeof crypto?.randomUUID === "function"
+    ? `pending-${crypto.randomUUID()}`
+    : `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function ensureActiveEncryptionContext() {
+  if (currentWallet && currentChain && currentMlkemPublicKey) {
+    return {
+      wallet: currentWallet,
+      chain: currentChain,
+      mlkem_pk_b64: currentMlkemPublicKey,
+    };
+  }
+
+  const session = await apiGet("/auth/session");
+  currentWallet = session.wallet;
+  currentChain = session.chain;
+  currentMlkemPublicKey = session.mlkem_pk_b64 || null;
+
+  if (!currentWallet || !currentChain || !currentMlkemPublicKey) {
+    throw new Error("Active wallet encryption context is unavailable.");
+  }
+
+  return session;
+}
+
+async function deriveHkdfSha256(sharedSecretBytes, infoText, lengthBytes = 32) {
+  if (!crypto?.subtle) {
+    throw new Error("WebCrypto HKDF is unavailable in this browser.");
+  }
+
+  const infoBytes = new TextEncoder().encode(String(infoText || ""));
+  const baseKey = await crypto.subtle.importKey("raw", sharedSecretBytes, "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(),
+      info: infoBytes,
+    },
+    baseKey,
+    lengthBytes * 8
+  );
+  return new Uint8Array(bits);
+}
+
+async function mlkemEncapsulateForBrowser(publicKeyB64) {
+  const result = await callPqWorker("encapsulateMlKem", {
+    public_key_b64: publicKeyB64,
+    seed_b64: randomBase64(32),
+  });
+
+  return {
+    ciphertext: base64ToBytes(result.ciphertext_b64),
+    sharedSecret: base64ToBytes(result.shared_secret_b64),
+  };
+}
+
+async function encryptBytesWithXChaCha(keyBytes, nonceBytes, plaintextBytes) {
+  const encrypted = await callPqWorker("encryptXChaCha20", {
+    key_b64: bytesToBase64(keyBytes),
+    nonce_b64: bytesToBase64(nonceBytes),
+    plaintext_b64: bytesToBase64(plaintextBytes),
+  });
+  return base64ToBytes(encrypted.ciphertext_b64);
+}
+
+async function buildClientEncryptedEnvelopeBytes(fileBytes, options = {}) {
+  const plaintextBytes = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
+  const context = await ensureActiveEncryptionContext();
+  const effectiveLabel = options.label || options.fileName || "Untitled document";
+  const effectiveMime = options.mimeType || "application/octet-stream";
+  const ownerWallet = String(options.ownerWallet || context.wallet || "").toLowerCase();
+  if (!ownerWallet) {
+    throw new Error("Active wallet is unavailable for browser encryption.");
+  }
+
+  const cek = randomBytes(32);
+  const payloadNonce = randomBytes(24);
+  const payloadCiphertext = await encryptBytesWithXChaCha(cek, payloadNonce, plaintextBytes);
+  const mlkem = await mlkemEncapsulateForBrowser(context.mlkem_pk_b64);
+  const wrapKey = await deriveHkdfSha256(mlkem.sharedSecret, CEK_WRAP_INFO, 32);
+  const wrapNonce = randomBytes(24);
+  const wrappedCek = await encryptBytesWithXChaCha(wrapKey, wrapNonce, cek);
+
+  const envelope = {
+    v: 1,
+    owner: ownerWallet,
+    created_at: Math.floor(Date.now() / 1000),
+    doc: {
+      logical_id: pendingLogicalId(),
+      filename: effectiveLabel || null,
+      mime: effectiveMime || null,
+      plaintext_sha3_256_hex: sha3Hex(plaintextBytes),
+      size_bytes: plaintextBytes.length,
+    },
+    encryption: {
+      alg: "xchacha20poly1305",
+      nonce_b64: bytesToBase64Url(payloadNonce),
+      cek_wrap: "mlkem",
+      wrapped_keys: [
+        {
+          kem: "mlkem768",
+          recipient: ownerWallet,
+          kem_ct_b64: bytesToBase64Url(mlkem.ciphertext),
+          wrap_nonce_b64: bytesToBase64Url(wrapNonce),
+          wrapped_cek_b64: bytesToBase64Url(wrappedCek),
+        },
+      ],
+    },
+    ciphertext_b64: bytesToBase64Url(payloadCiphertext),
+  };
+
+  const canonicalBytes = new TextEncoder().encode(JSON.stringify(envelope));
+  return {
+    canonicalBytes,
+    envelope,
+    hashHex: envelope.doc.plaintext_sha3_256_hex,
+    ciphertextHashHex: sha3Hex(canonicalBytes),
+    label: effectiveLabel,
+    mimeType: effectiveMime,
+    encryptionMode: CLIENT_ENCRYPTED_STORAGE_MODE,
+  };
+}
+
+async function buildClientEncryptedUploadForm(file, options = {}) {
+  const fileBytes = new Uint8Array(await file.arrayBuffer());
+  const label = String(options.label || file.name || "").trim() || "Untitled document";
+  const mimeType = options.mimeType || file.type || "application/octet-stream";
+  const encrypted = await buildClientEncryptedEnvelopeBytes(fileBytes, {
+    label,
+    fileName: file.name || label,
+    mimeType,
+    ownerWallet: options.ownerWallet,
+  });
+  const form = new FormData();
+  const envelopeBlob = new Blob([encrypted.canonicalBytes], {
+    type: "application/tidbit-envelope+json",
+  });
+
+  form.append("file", envelopeBlob, `${label}.tidbit-envelope.json`);
+  form.append("label", label);
+  form.append("encryption_source", CLIENT_ENCRYPTED_UPLOAD_MODE);
+  form.append("anchor_to_arweave", options.anchorToArweave ? "true" : "false");
+  if (options.changeSummary) form.append("change_summary", options.changeSummary);
+  if (options.editorMode) form.append("editor_mode", options.editorMode);
+  if (options.beforeHashHex) form.append("before_hash_hex", options.beforeHashHex);
+
+  return { form, encrypted };
 }
 
 async function generateBrowserPqKeypair() {
@@ -775,6 +956,16 @@ function createSharedFileCard(item) {
   card.appendChild(createMetaLine("Status", item.status));
   card.appendChild(createMetaLine("Wallet route", item.recipient_wallet ? "yes" : "no"));
   card.appendChild(createMetaLine("Delivery", shareDeliverySummary(item)));
+  card.appendChild(
+    createMetaLine(
+      "Share anchor",
+      item.share_arweave_tx
+        ? item.share_arweave_tx
+        : item.share_anchor_hash_hex || item.anchor_to_arweave
+          ? "requested"
+          : "not anchored"
+    )
+  );
   card.appendChild(createMetaLine("Expires", item.expires_at ? new Date(item.expires_at).toLocaleString() : "server default"));
   card.appendChild(createMetaLine("Guest signing", item.allow_guest_sign ? "allowed" : "wallet/PQ only"));
   card.appendChild(createMetaLine("Version", `v${item.version}`));
@@ -971,6 +1162,7 @@ async function loadSessionInfo() {
   }
   currentWallet = data.wallet;
   currentChain = data.chain;
+  currentMlkemPublicKey = data.mlkem_pk_b64 || null;
   const signatureMode = document.getElementById("signatureMode");
   if (signatureMode && !signatureMode.dataset.userSelected) {
     signatureMode.value = currentChain === "sol" ? "sol_ed25519" : "evm_personal_sign";
@@ -1111,48 +1303,57 @@ async function uploadDoc() {
   const anchor = document.getElementById("uploadAnchor")?.checked;
   if (!file) return alert("Pick a file");
 
-  const form = new FormData();
-  form.append("file", file);
-  if (label) form.append("label", label);
-  form.append("anchor_to_arweave", anchor ? "true" : "false");
+  try {
+    progress.value = 0;
+    status.innerText = "Encrypting in browser...";
 
-  progress.value = 0;
-  status.innerText = "Uploading...";
+    const { form } = await buildClientEncryptedUploadForm(file, {
+      label: String(label || "").trim(),
+      anchorToArweave: anchor,
+      ownerWallet: currentWallet,
+    });
 
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", `${API}/api/doc/upload`);
-  Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
-  xhr.upload.onprogress = (event) => {
-    if (!event.lengthComputable) return;
-    const pct = Math.round((event.loaded / event.total) * 100);
-    progress.value = pct;
-    status.innerText = `Uploading... ${pct}%`;
-  };
+    status.innerText = "Encrypted locally. Uploading...";
 
-  xhr.onload = () => {
-    if (xhr.status >= 200 && xhr.status < 300) {
-      progress.value = 100;
-      status.innerText = "Upload complete";
-      loadDocuments();
-      document.getElementById("uploadFile").value = "";
-      document.getElementById("uploadLabel").value = "";
-      if (document.getElementById("uploadAnchor")) {
-        document.getElementById("uploadAnchor").checked = false;
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API}/api/doc/upload`);
+    Object.entries(authHeaders()).forEach(([name, value]) => xhr.setRequestHeader(name, value));
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.round((event.loaded / event.total) * 100);
+      progress.value = pct;
+      status.innerText = `Encrypted locally. Uploading... ${pct}%`;
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        progress.value = 100;
+        status.innerText = "Browser-encrypted upload complete";
+        loadDocuments();
+        document.getElementById("uploadFile").value = "";
+        document.getElementById("uploadLabel").value = "";
+        if (document.getElementById("uploadAnchor")) {
+          document.getElementById("uploadAnchor").checked = false;
+        }
+      } else {
+        progress.value = 0;
+        status.innerText = "Upload failed";
+        alert("Upload failed: " + xhr.responseText);
       }
-    } else {
+    };
+
+    xhr.onerror = () => {
       progress.value = 0;
       status.innerText = "Upload failed";
-      alert("Upload failed: " + xhr.responseText);
-    }
-  };
+      alert("Upload failed");
+    };
 
-  xhr.onerror = () => {
+    xhr.send(form);
+  } catch (error) {
     progress.value = 0;
     status.innerText = "Upload failed";
-    alert("Upload failed");
-  };
-
-  xhr.send(form);
+    alert(`Browser encryption failed: ${error.message}`);
+  }
 }
 
 // ================== DOWNLOAD + VERIFY ==================
@@ -1608,6 +1809,12 @@ function prepareShare(doc, seedShare = null) {
   if (downloadAllowed) downloadAllowed.checked = seedShare?.download_allowed ?? true;
   const allowGuestSign = document.getElementById("modalAllowGuestSign");
   if (allowGuestSign) allowGuestSign.checked = Boolean(seedShare?.allow_guest_sign);
+  const anchorShare = document.getElementById("modalAnchorShare");
+  if (anchorShare) {
+    anchorShare.checked = seedShare
+      ? Boolean(seedShare?.anchor_to_arweave || seedShare?.share_arweave_tx || seedShare?.share_anchor_hash_hex)
+      : true;
+  }
   const recipientChain = document.getElementById("modalRecipientChain");
   if (recipientChain) recipientChain.value = seedShare?.recipient_chain || (currentChain === "sol" ? "sol" : "evm");
   const stateRoot = document.getElementById("shareModalState");
@@ -1743,6 +1950,7 @@ async function shareDocument(docId) {
   const oneTimeUse = Boolean(document.getElementById("modalShareOneTimeUse")?.checked);
   const downloadAllowed = Boolean(document.getElementById("modalDownloadAllowed")?.checked);
   const allowGuestSign = Boolean(document.getElementById("modalAllowGuestSign")?.checked);
+  const anchorToArweave = Boolean(document.getElementById("modalAnchorShare")?.checked);
 
   if (!recipient && !recipientEmail && !recipientPhone) {
     return alert("Provide a wallet, email, or phone number for the recipient.");
@@ -1774,6 +1982,7 @@ async function shareDocument(docId) {
     one_time_use: oneTimeUse,
     download_allowed: downloadAllowed,
     allow_guest_sign: allowGuestSign,
+    anchor_to_arweave: anchorToArweave,
   });
 
   return { ...res, recipient_wallet: recipient, recipient_chain: recipient ? recipientChain : null };
@@ -1795,6 +2004,7 @@ async function shareSelectedDocument() {
     `One-time use: ${res.one_time_use ? "yes" : "no"}`,
     `Guest signing: ${res.allow_guest_sign ? "allowed" : "wallet/PQ only"}`,
     `Wallet route: ${res.recipient_wallet ? `ready for ${res.recipient_chain || "wallet"} inbox` : "not used"}`,
+    `Arweave share anchor: ${res.share_arweave_tx || (res.anchor_to_arweave ? "requested but not anchored yet" : "not requested")}`,
     `Provider delivery issues: ${res.delivery_errors?.length || 0}`,
   ].join("\n");
   document.getElementById("shareResult").innerText = `${summary}\n\n${JSON.stringify(res, null, 2)}`;
@@ -1828,17 +2038,21 @@ async function createVersion() {
     alert("Pick the updated file to upload.");
     return;
   }
-
-  const form = new FormData();
-  form.append("file", file);
   const label = document.getElementById("versionLabel").value.trim();
-  if (label) form.append("label", label);
   const changeSummary = document.getElementById("versionChangeSummary")?.value.trim();
-  if (changeSummary) form.append("change_summary", changeSummary);
-  form.append(
-    "anchor_to_arweave",
-    document.getElementById("versionAnchor")?.checked ? "true" : "false"
-  );
+  const anchorToArweave = document.getElementById("versionAnchor")?.checked;
+  const resultRoot = document.getElementById("versionResult");
+
+  if (resultRoot) {
+    resultRoot.innerText = "Encrypting updated version in browser…";
+  }
+
+  const { form } = await buildClientEncryptedUploadForm(file, {
+    label,
+    anchorToArweave,
+    ownerWallet: currentWallet,
+    changeSummary,
+  });
 
   const resp = await fetch(`${API}/api/doc/${selectedVersionParent.id}/version`, {
     method: "POST",
@@ -2168,6 +2382,17 @@ function renderShareCards(shares) {
     article.appendChild(createMetaLine("Email", share.recipient_email || "not provided", { className: "event-meta" }));
     article.appendChild(createMetaLine("Phone", share.recipient_phone || "not provided", { className: "event-meta" }));
     article.appendChild(createMetaLine("Delivery", shareDeliverySummary(share), { className: "event-meta" }));
+    article.appendChild(
+      createMetaLine(
+        "Share anchor",
+        share.share_arweave_tx
+          ? share.share_arweave_tx
+          : share.share_anchor_hash_hex || share.anchor_to_arweave
+            ? "requested"
+            : "not anchored",
+        { className: "event-meta" }
+      )
+    );
     article.appendChild(createMetaLine("Expires", share.expires_at ? new Date(share.expires_at).toLocaleString() : "server default", { className: "event-meta" }));
     article.appendChild(createMetaLine("Viewed", share.viewed_at ? new Date(share.viewed_at).toLocaleString() : "not yet", { className: "event-meta" }));
     article.appendChild(createMetaLine("Completed", share.completed_at ? new Date(share.completed_at).toLocaleString() : "not yet", { className: "event-meta" }));
@@ -2572,17 +2797,25 @@ async function loadEditorPage() {
   contentRoot.value = text;
   document.getElementById("editVersionLabel").value = `${review.label || "Edited document"} v${Number(review.version || 1) + 1}`;
   document.getElementById("saveEditedVersionBtn").onclick = async () => {
-    const form = new FormData();
     const updatedText = contentRoot.value;
     const label = document.getElementById("editVersionLabel").value.trim();
     const changeSummary = document.getElementById("editChangeSummary").value.trim();
-    form.append("file", new Blob([updatedText], { type: review.mime_type || "text/plain" }), review.label || "edited.txt");
-    if (label) form.append("label", label);
-    form.append("anchor_to_arweave", document.getElementById("editAnchor").checked ? "true" : "false");
-    form.append("change_summary", changeSummary || "Browser editor save");
-    form.append("editor_mode", "browser_text_editor");
-    form.append("before_hash_hex", review.hash_hex);
+    const file = new File(
+      [updatedText],
+      review.label || "edited.txt",
+      { type: review.mime_type || "text/plain" }
+    );
 
+    document.getElementById("editStatus").textContent = "Encrypting edited version in browser…";
+    const { form } = await buildClientEncryptedUploadForm(file, {
+      label,
+      anchorToArweave: document.getElementById("editAnchor").checked,
+      ownerWallet: currentWallet,
+      changeSummary: changeSummary || "Browser editor save",
+      editorMode: "browser_text_editor",
+      beforeHashHex: review.hash_hex,
+      mimeType: review.mime_type || "text/plain",
+    });
     document.getElementById("editStatus").textContent = "Saving edited version…";
     const resp = await fetch(`${API}/api/doc/${id}/version`, {
       method: "POST",

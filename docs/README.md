@@ -8,6 +8,7 @@ This documentation set currently tracks production release `1.0.0`.
 
 - [User Guide](./user-guide.md)
 - [Review And Custody Concepts](./review-and-custody-concepts.md)
+- [Encryption And Decryption](./encryption-and-decryption.md)
 - [Agent Workflows](./agent-workflows.md)
 - [Architecture](./architecture.md)
 - [Code Walkthrough](./code-walkthrough.md)
@@ -61,8 +62,9 @@ The app currently supports:
 - shared inbox and shared activity feed
 - evidence export
 - linked document versions
+- browser-side PQ envelope encryption for web uploads and version saves
 - browser-local ML-DSA key generation, backup/import, and signing for web review flows
-- optional Arweave anchoring
+- optional Arweave anchoring for document evidence and share issuance
 - delivery provider integration points for Resend and Twilio
 - billing status scaffolding for a 30-day trial and `$8/month` plan
 
@@ -71,7 +73,7 @@ The app currently supports:
 The app has a real custody ledger and real signature verification, but there are still important boundaries:
 
 - Supabase object storage is active application storage
-- the current web path supports browser-local ML-DSA signing, but not browser-generated PQ encryption yet
+- the current web path supports browser-side PQ envelope encryption, but decryption custody is still server-managed for the owner wallet
 - signatures are cryptographically verified by the app, but they are not on-chain attestations by default
 - billing status exists, but Stripe checkout and hard billing enforcement are not finished yet
 

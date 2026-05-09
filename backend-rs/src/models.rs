@@ -47,6 +47,7 @@ pub struct ShareRequest {
     pub one_time_use: Option<bool>,
     pub download_allowed: Option<bool>,
     pub allow_guest_sign: Option<bool>,
+    pub anchor_to_arweave: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

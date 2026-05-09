@@ -168,6 +168,7 @@ function renderKpis(overview) {
     createStatCard(kpis.total_docs || 0, "Active docs"),
     createStatCard(kpis.total_versions || 0, "Document versions"),
     createStatCard(kpis.total_shares || 0, "All shares"),
+    createStatCard(kpis.total_share_anchors || 0, "Arweave share anchors"),
     createStatCard(kpis.total_sign_events || 0, "All sign events")
   );
 }
@@ -188,6 +189,7 @@ function renderUsage(overview) {
     createStatCard(usage.inbox_actions || 0, "Inbox actions", label),
     createStatCard(usage.public_opens || 0, "Public opens", label),
     createStatCard(usage.public_completions || 0, "Public completions", label),
+    createStatCard(usage.share_anchors || 0, "Share anchors", label),
     createStatCard(usage.agents_registered || 0, "Agents registered", label),
     createStatCard(overview.kpis?.wallet_logins_30d || 0, "Wallet logins 30d"),
     createStatCard(overview.kpis?.total_agents || 0, "Active agents")

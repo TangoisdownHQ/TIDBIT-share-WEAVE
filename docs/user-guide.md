@@ -298,7 +298,7 @@ Users should use evidence export when they need:
 ## Important Current Boundaries
 
 - Files are stored in Supabase Storage as app-managed PQ envelope objects.
-- Browser-local ML-DSA signing is available, but browser-side PQ encryption is not the default web path yet.
+- Browser-side PQ envelope encryption is now used for normal web uploads and version saves, while browser-local ML-DSA signing remains available for signatures.
 - Arweave anchoring is optional, not mandatory.
 - Billing exists as status scaffolding, not full paid checkout yet.
 - Email/SMS delivery depends on provider configuration.

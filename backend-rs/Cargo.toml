@@ -76,3 +76,6 @@ urlencoding = "2"
 [[bin]]
 name = "tidbit"
 path = "src/main.rs"
+
+[dev-dependencies]
+fips203 = { version = "0.4.3", default-features = false, features = ["ml-kem-768"] }

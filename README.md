@@ -118,6 +118,7 @@ Current state includes:
 - New-login revocation of older active wallet sessions
 - Account session history with current, active, and revoked session visibility
 - Secure file uploads
+- Browser-side PQ envelope encryption for web uploads and version saves
 - Review-before-sign flow
 - Public signing links
 - Browser-native ML-DSA key generation, backup/import, and local PQ signing
@@ -128,19 +129,19 @@ Current state includes:
 - Wallet-to-wallet sharing across EVM and Solana
 - Last-signed visibility on document cards and details
 - Billing status scaffolding with 30-day trial metadata
-- Optional Arweave anchoring
+- Optional Arweave anchoring for document evidence and share issuance
 - Policy and agent API groundwork
 - Clean Rust dependency audit at the current checkpoint
 
 Still in progress:
 
-- Browser-side PQ encryption, org-managed PQ custody, and crypto-agility
+- Org-managed PQ custody fan-out and deeper crypto-agility
 - Full production billing enforcement and checkout
 - Office-class collaborative editing
 
 ## 🗺️ Roadmap
 
-- End-to-end browser-side PQ encryption and managed-key lifecycle
+- Multi-recipient org-managed PQ custody and managed-key lifecycle
 - Provider-backed email and SMS delivery
 - Wallet-native recipient notification and acceptance flows
 - Human and AI agent policy routing
@@ -237,9 +238,9 @@ PQC-verifiable structure
 hash-anchored evidence
 ```
 
-Everything is designed to be tamper-evident and verifiable. Some production flows are still evolving toward full browser-side zero-trust PQ execution.
+Everything is designed to be tamper-evident and verifiable. The current web path now encrypts uploads in the browser before sending them to the backend, while decryption custody and recovery are still server-managed for the owner wallet.
 
-Today, the web app already supports browser-local ML-DSA signing for review and public-envelope flows. The remaining PQ roadmap is about browser-side encryption, managed organizational custody, recovery, and crypto-agility.
+Today, the web app already supports browser-local ML-DSA signing for review and public-envelope flows. The remaining PQ roadmap is about managed organizational custody, recovery, and crypto-agility.
 
 ## 🧪 Backend Setup
 

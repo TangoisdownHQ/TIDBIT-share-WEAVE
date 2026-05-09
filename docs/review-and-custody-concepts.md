@@ -225,7 +225,7 @@ If you are reviewing the system, the most important things to verify are:
 
 The product is materially stronger than a basic share-and-sign app, but these boundaries still matter:
 
-- browser-local PQ signing is available, but browser-side PQ encryption is not yet the default web path
+- browser-side PQ encryption is available for normal web uploads and version saves, but decryption custody is still server-managed for the owner wallet
 - Arweave anchoring is optional
 - on-chain attestation is not the default signature model
 - billing and provider delivery are not fully production-complete

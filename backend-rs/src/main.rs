@@ -104,6 +104,7 @@ struct CreatedDocumentRecord {
     mime_type: String,
     parent_id: Option<uuid::Uuid>,
     arweave_tx: Option<String>,
+    encryption_mode: String,
 }
 
 struct AgentIdentityRecord {
@@ -125,6 +126,10 @@ struct DocumentBytesResponse {
     arweave_tx: Option<String>,
     encryption_mode: String,
 }
+
+const ENCRYPTION_MODE_SERVER_MANAGED: &str = "pq_envelope_server_managed";
+const ENCRYPTION_MODE_BROWSER_ENCRYPTED: &str = "pq_envelope_browser_encrypted";
+const CLIENT_ENCRYPTED_UPLOAD_MODE: &str = "browser_pq_envelope_v1";
 
 // ================================================================
 // ENTRY
@@ -737,6 +742,9 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
             add column if not exists one_time_use boolean not null default false,
             add column if not exists download_allowed boolean not null default true,
             add column if not exists allow_guest_sign boolean,
+            add column if not exists share_anchor_hash_hex text,
+            add column if not exists share_arweave_tx text,
+            add column if not exists share_anchored_at timestamptz,
             add column if not exists open_count integer not null default 0,
             add column if not exists completion_count integer not null default 0
         "#,
@@ -857,6 +865,7 @@ async fn admin_growth_overview_handler(
             (select count(*) from documents where is_deleted = false) as total_docs,
             (select count(*) from documents where is_deleted = false and parent_id is not null) as total_versions,
             (select count(*) from document_shares) as total_shares,
+            (select count(*) from document_shares where share_arweave_tx is not null) as total_share_anchors,
             (select count(*) from document_events where event_type in ('SIGN', 'ENVELOPE_COMPLETED', 'AGENT_SIGN')) as total_sign_events,
             (select count(*) from agent_identities where coalesce(is_active, true)) as total_agents
         "#,
@@ -877,6 +886,7 @@ async fn admin_growth_overview_handler(
             (select count(*) from document_events where event_type like 'INBOX_%' and created_at >= now() - ($1::int * interval '1 day')) as inbox_actions_window,
             (select count(*) from document_events where event_type = 'ENVELOPE_OPENED' and created_at >= now() - ($1::int * interval '1 day')) as public_opens_window,
             (select count(*) from document_events where event_type = 'ENVELOPE_COMPLETED' and created_at >= now() - ($1::int * interval '1 day')) as public_completions_window,
+            (select count(*) from document_shares where share_arweave_tx is not null and share_anchored_at >= now() - ($1::int * interval '1 day')) as share_anchors_window,
             (select count(*) from agent_identities where created_at >= now() - ($1::int * interval '1 day')) as agents_window
         "#,
     )
@@ -1531,6 +1541,7 @@ async fn admin_growth_overview_handler(
             "total_docs": kpis.get::<i64, _>("total_docs"),
             "total_versions": kpis.get::<i64, _>("total_versions"),
             "total_shares": kpis.get::<i64, _>("total_shares"),
+            "total_share_anchors": kpis.get::<i64, _>("total_share_anchors"),
             "total_sign_events": kpis.get::<i64, _>("total_sign_events"),
             "total_agents": kpis.get::<i64, _>("total_agents")
         },
@@ -1544,6 +1555,7 @@ async fn admin_growth_overview_handler(
             "inbox_actions": usage.get::<i64, _>("inbox_actions_window"),
             "public_opens": usage.get::<i64, _>("public_opens_window"),
             "public_completions": usage.get::<i64, _>("public_completions_window"),
+            "share_anchors": usage.get::<i64, _>("share_anchors_window"),
             "agents_registered": usage.get::<i64, _>("agents_window")
         },
         "funnel": {
@@ -2266,6 +2278,49 @@ fn auto_anchor_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn auto_share_anchor_enabled() -> bool {
+    std::env::var("ARWEAVE_AUTO_ANCHOR_SHARES")
+        .map(|value| bool_from_form_text(&value))
+        .unwrap_or_else(|_| auto_anchor_enabled())
+}
+
+fn share_anchor_hash_hex(
+    doc_id: uuid::Uuid,
+    doc_hash_hex: &str,
+    sender_wallet: &str,
+    sender_chain: &str,
+    recipient_wallet: Option<&str>,
+    recipient_chain: Option<&str>,
+    recipient_name: Option<&str>,
+    recipient_email: Option<&str>,
+    recipient_phone: Option<&str>,
+    note: Option<&str>,
+    envelope_id: uuid::Uuid,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    one_time_use: bool,
+    download_allowed: bool,
+    allow_guest_sign: Option<bool>,
+) -> String {
+    let canonical = canonical_json(&json!({
+        "doc_id": doc_id,
+        "doc_hash_hex": doc_hash_hex,
+        "sender_wallet": sender_wallet,
+        "sender_chain": sender_chain,
+        "recipient_wallet": recipient_wallet,
+        "recipient_chain": recipient_chain,
+        "recipient_name": recipient_name,
+        "recipient_email": recipient_email,
+        "recipient_phone": recipient_phone,
+        "note": note,
+        "envelope_id": envelope_id,
+        "expires_at": expires_at.to_rfc3339(),
+        "one_time_use": one_time_use,
+        "download_allowed": download_allowed,
+        "allow_guest_sign": allow_guest_sign
+    }));
+    hex::encode(pqc_sha3::sha3_256_bytes(&canonical))
+}
+
 fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
@@ -2275,6 +2330,130 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
 
 fn multipart_error(context: &str, err: impl std::fmt::Display) -> AppError {
     AppError::BadRequest(format!("{context}: {err}"))
+}
+
+#[derive(Default)]
+struct ParsedMultipartUpload {
+    file_bytes: Option<Vec<u8>>,
+    label: Option<String>,
+    mime_type: Option<String>,
+    original_name: Option<String>,
+    anchor_to_arweave: bool,
+    encryption_source: Option<String>,
+    change_summary: Option<String>,
+    editor_mode: Option<String>,
+    before_hash_hex: Option<String>,
+}
+
+async fn parse_document_multipart(
+    mut multipart: Multipart,
+    context_prefix: &str,
+    default_anchor_to_arweave: bool,
+) -> Result<ParsedMultipartUpload, AppError> {
+    let mut parsed = ParsedMultipartUpload {
+        anchor_to_arweave: default_anchor_to_arweave,
+        ..Default::default()
+    };
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| multipart_error(&format!("{context_prefix} stream failed"), e))?
+    {
+        match field.name().unwrap_or("") {
+            "file" => {
+                parsed.mime_type = field.content_type().map(ToOwned::to_owned);
+                parsed.original_name = field.file_name().map(ToOwned::to_owned);
+                parsed.file_bytes = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(&format!("Reading {context_prefix} file failed"), e)
+                        })?
+                        .to_vec(),
+                );
+            }
+            "label" => {
+                parsed.label = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(&format!("Reading {context_prefix} label failed"), e)
+                        })?,
+                );
+            }
+            "anchor_to_arweave" => {
+                parsed.anchor_to_arweave = bool_from_form_text(
+                    &field
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(
+                                &format!("Reading {context_prefix} Arweave flag failed"),
+                                e,
+                            )
+                        })?,
+                );
+            }
+            "encryption_source" => {
+                parsed.encryption_source = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(
+                                &format!("Reading {context_prefix} encryption mode failed"),
+                                e,
+                            )
+                        })?,
+                );
+            }
+            "change_summary" => {
+                parsed.change_summary = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(
+                                &format!("Reading {context_prefix} change summary failed"),
+                                e,
+                            )
+                        })?,
+                );
+            }
+            "editor_mode" => {
+                parsed.editor_mode = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(
+                                &format!("Reading {context_prefix} editor mode failed"),
+                                e,
+                            )
+                        })?,
+                );
+            }
+            "before_hash_hex" => {
+                parsed.before_hash_hex = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| {
+                            multipart_error(
+                                &format!("Reading {context_prefix} before snapshot hash failed"),
+                                e,
+                            )
+                        })?,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    Ok(parsed)
 }
 
 fn event_chain_hash_hex(
@@ -2562,6 +2741,13 @@ async fn build_document_envelope(
     Ok((canonical, ciphertext_hash_hex))
 }
 
+fn is_envelope_encryption_mode(mode: &str) -> bool {
+    matches!(
+        mode,
+        ENCRYPTION_MODE_SERVER_MANAGED | ENCRYPTION_MODE_BROWSER_ENCRYPTED
+    )
+}
+
 async fn decrypt_document_envelope(
     db: &PgPool,
     owner_wallet: &str,
@@ -2585,7 +2771,7 @@ async fn load_document_bytes_for_access(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let bytes = if access.encryption_mode == "pq_envelope_server_managed" {
+    let bytes = if is_envelope_encryption_mode(&access.encryption_mode) {
         decrypt_document_envelope(&st.db, &access.owner_wallet, &stored).await?
     } else {
         stored
@@ -2830,7 +3016,50 @@ async fn create_document_record(
     anchor_to_arweave: bool,
 ) -> Result<CreatedDocumentRecord, AppError> {
     let hash_hex = hex::encode(pqc_sha3::sha3_256_bytes(bytes));
+    let id = uuid::Uuid::new_v4();
+    let version = parent_version.map(|value| value + 1).unwrap_or(1);
+    let (stored_bytes, ciphertext_hash_hex) = build_document_envelope(
+        &st.db,
+        owner_wallet,
+        id,
+        label.as_deref(),
+        &mime_type,
+        bytes,
+    )
+    .await?;
+    persist_document_record(
+        st,
+        owner_wallet,
+        id,
+        version,
+        hash_hex,
+        label,
+        mime_type,
+        bytes.len() as i64,
+        parent_id,
+        anchor_to_arweave,
+        stored_bytes,
+        ENCRYPTION_MODE_SERVER_MANAGED,
+        ciphertext_hash_hex,
+    )
+    .await
+}
 
+async fn persist_document_record(
+    st: &AppState,
+    owner_wallet: &str,
+    id: uuid::Uuid,
+    version: i32,
+    hash_hex: String,
+    label: Option<String>,
+    mime_type: String,
+    file_size: i64,
+    parent_id: Option<uuid::Uuid>,
+    anchor_to_arweave: bool,
+    stored_bytes: Vec<u8>,
+    encryption_mode: &str,
+    ciphertext_hash_hex: String,
+) -> Result<CreatedDocumentRecord, AppError> {
     let existing = sqlx::query(
         "select id from documents where owner_wallet = $1 and hash_hex = $2 and is_deleted = false",
     )
@@ -2847,17 +3076,6 @@ async fn create_document_record(
         )));
     }
 
-    let id = uuid::Uuid::new_v4();
-    let version = parent_version.map(|value| value + 1).unwrap_or(1);
-    let (stored_bytes, ciphertext_hash_hex) = build_document_envelope(
-        &st.db,
-        owner_wallet,
-        id,
-        label.as_deref(),
-        &mime_type,
-        bytes,
-    )
-    .await?;
     let storage_path = st
         .storage
         .upload_bytes(
@@ -2890,13 +3108,13 @@ async fn create_document_record(
     .bind(owner_wallet)
     .bind(&hash_hex)
     .bind(&label)
-    .bind(bytes.len() as i64)
+    .bind(file_size)
     .bind(&mime_type)
     .bind(&storage_path)
     .bind(version)
     .bind(parent_id)
     .bind(&arweave_tx)
-    .bind("pq_envelope_server_managed")
+    .bind(encryption_mode)
     .bind(&ciphertext_hash_hex)
     .execute(&st.db)
     .await
@@ -2911,7 +3129,114 @@ async fn create_document_record(
         mime_type,
         parent_id,
         arweave_tx,
+        encryption_mode: encryption_mode.to_string(),
     })
+}
+
+async fn create_document_record_from_client_envelope(
+    st: &AppState,
+    owner_wallet: &str,
+    envelope_bytes: &[u8],
+    label: Option<String>,
+    fallback_mime_type: Option<String>,
+    parent_id: Option<uuid::Uuid>,
+    parent_version: Option<i32>,
+    anchor_to_arweave: bool,
+) -> Result<CreatedDocumentRecord, AppError> {
+    let mut envelope: DocumentEnvelopeV1 = serde_json::from_slice(envelope_bytes)
+        .map_err(|e| AppError::BadRequest(format!("Invalid encrypted upload envelope: {e}")))?;
+    let owner_wallet = owner_wallet.to_lowercase();
+    if envelope.v != 1 {
+        return Err(AppError::BadRequest(
+            "Unsupported encrypted upload envelope version".into(),
+        ));
+    }
+    if envelope.owner.to_lowercase() != owner_wallet {
+        return Err(AppError::Forbidden(
+            "Encrypted upload envelope owner does not match the active wallet".into(),
+        ));
+    }
+    if envelope.encryption.alg != "xchacha20poly1305" || envelope.encryption.cek_wrap != "mlkem" {
+        return Err(AppError::BadRequest(
+            "Encrypted upload envelope uses an unsupported algorithm".into(),
+        ));
+    }
+    if !envelope
+        .encryption
+        .wrapped_keys
+        .iter()
+        .any(|key| key.recipient == owner_wallet && key.kem == "mlkem768")
+    {
+        return Err(AppError::BadRequest(
+            "Encrypted upload envelope is missing an owner ML-KEM wrapped key".into(),
+        ));
+    }
+
+    let hash_hex = envelope.doc.plaintext_sha3_256_hex.trim().to_ascii_lowercase();
+    let decoded_hash = hex::decode(&hash_hex)
+        .map_err(|_| AppError::BadRequest("Encrypted upload hash is not valid hex".into()))?;
+    if decoded_hash.len() != 32 {
+        return Err(AppError::BadRequest(
+            "Encrypted upload hash must be 32 bytes".into(),
+        ));
+    }
+
+    let id = uuid::Uuid::new_v4();
+    let version = parent_version.map(|value| value + 1).unwrap_or(1);
+    envelope.owner = owner_wallet;
+    envelope.doc.logical_id = id.to_string();
+
+    let label = label
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            envelope
+                .doc
+                .filename
+                .clone()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        });
+    envelope.doc.filename = label.clone();
+
+    let mime_type = fallback_mime_type
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() || trimmed == "application/tidbit-envelope+json" {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+        .or_else(|| {
+            envelope
+                .doc
+                .mime
+                .clone()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    envelope.doc.mime = Some(mime_type.clone());
+
+    let stored_bytes = canonical_json(&envelope);
+    let ciphertext_hash_hex = hex::encode(pqc_sha3::sha3_256_bytes(&stored_bytes));
+    persist_document_record(
+        st,
+        &envelope.owner,
+        id,
+        version,
+        hash_hex,
+        label,
+        mime_type,
+        envelope.doc.size_bytes as i64,
+        parent_id,
+        anchor_to_arweave,
+        stored_bytes,
+        ENCRYPTION_MODE_BROWSER_ENCRYPTED,
+        ciphertext_hash_hex,
+    )
+    .await
 }
 
 // ================================================================
@@ -3216,6 +3541,9 @@ async fn list_shared_handler(
             s.delivery_json,
             s.expires_at,
             s.revoked_at,
+            s.share_anchor_hash_hex,
+            s.share_arweave_tx,
+            s.share_anchored_at,
             s.one_time_use,
             s.download_allowed,
             s.allow_guest_sign,
@@ -3251,6 +3579,9 @@ async fn list_shared_handler(
                     "delivery_json": r.get::<serde_json::Value,_>("delivery_json"),
                     "expires_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("expires_at"),
                     "revoked_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("revoked_at"),
+                    "share_anchor_hash_hex": r.get::<Option<String>,_>("share_anchor_hash_hex"),
+                    "share_arweave_tx": r.get::<Option<String>,_>("share_arweave_tx"),
+                    "share_anchored_at": r.get::<Option<chrono::DateTime<chrono::Utc>>,_>("share_anchored_at"),
                     "one_time_use": r.get::<bool,_>("one_time_use"),
                     "download_allowed": r.get::<bool,_>("download_allowed"),
                     "allow_guest_sign": r.get::<Option<bool>,_>("allow_guest_sign"),
@@ -3615,6 +3946,9 @@ async fn export_doc_evidence_handler(
             expires_at,
             revoked_at,
             revoked_reason,
+            share_anchor_hash_hex,
+            share_arweave_tx,
+            share_anchored_at,
             one_time_use,
             download_allowed,
             allow_guest_sign,
@@ -3751,6 +4085,9 @@ async fn export_doc_evidence_handler(
             "expires_at": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("expires_at"),
             "revoked_at": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("revoked_at"),
             "revoked_reason": row.get::<Option<String>,_>("revoked_reason"),
+            "share_anchor_hash_hex": row.get::<Option<String>,_>("share_anchor_hash_hex"),
+            "share_arweave_tx": row.get::<Option<String>,_>("share_arweave_tx"),
+            "share_anchored_at": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("share_anchored_at"),
             "one_time_use": row.get::<bool,_>("one_time_use"),
             "download_allowed": row.get::<bool,_>("download_allowed"),
             "allow_guest_sign": row.get::<Option<bool>,_>("allow_guest_sign"),
@@ -4312,71 +4649,57 @@ async fn agent_version_doc_handler(
 async fn upload_doc_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
 
-    let mut file_bytes = None;
-    let mut label = None;
-    let mut mime_type = None;
-    let mut original_name = None;
-    let mut anchor_to_arweave = auto_anchor_enabled();
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| multipart_error("Upload stream failed", e))?
-    {
-        match field.name().unwrap_or("") {
-            "file" => {
-                mime_type = field.content_type().map(ToOwned::to_owned);
-                original_name = field.file_name().map(ToOwned::to_owned);
-                file_bytes = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| multipart_error("Reading uploaded file failed", e))?
-                        .to_vec(),
-                );
-            }
-            "label" => {
-                label = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading upload label failed", e))?,
-                )
-            }
-            "anchor_to_arweave" => {
-                anchor_to_arweave = bool_from_form_text(
-                    &field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading Arweave flag failed", e))?,
-                )
-            }
-            _ => {}
-        }
-    }
-
+    let parsed = parse_document_multipart(multipart, "upload", auto_anchor_enabled()).await?;
+    let ParsedMultipartUpload {
+        file_bytes,
+        label: parsed_label,
+        mime_type: parsed_mime_type,
+        original_name,
+        anchor_to_arweave,
+        encryption_source,
+        ..
+    } = parsed;
     let bytes = file_bytes.ok_or_else(|| AppError::BadRequest("No file uploaded".into()))?;
-    let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
-    let label = label
+    let encryption_source = encryption_source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let label = parsed_label
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or(original_name);
-    let record = create_document_record(
-        &st,
-        &wallet,
-        &bytes,
-        label.clone(),
-        mime_type.clone(),
-        None,
-        None,
-        anchor_to_arweave,
-    )
-    .await?;
+    let record = if encryption_source == Some(CLIENT_ENCRYPTED_UPLOAD_MODE) {
+        create_document_record_from_client_envelope(
+            &st,
+            &wallet,
+            &bytes,
+            label.clone(),
+            None,
+            None,
+            None,
+            anchor_to_arweave,
+        )
+        .await?
+    } else {
+        let mime_type = parsed_mime_type
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        create_document_record(
+            &st,
+            &wallet,
+            &bytes,
+            label.clone(),
+            mime_type,
+            None,
+            None,
+            anchor_to_arweave,
+        )
+        .await?
+    };
 
     sqlx::query(
         "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'UPLOAD',$3)",
@@ -4392,7 +4715,7 @@ async fn upload_doc_handler(
             "label": record.label,
             "parent_id": record.parent_id,
             "arweave_tx": record.arweave_tx,
-            "encryption_mode": "pq_envelope_server_managed"
+            "encryption_mode": record.encryption_mode
         }),
         &session,
         &headers,
@@ -4416,7 +4739,8 @@ async fn upload_doc_handler(
             "label": record.label.clone(),
             "parent_id": record.parent_id,
             "arweave_tx": record.arweave_tx.clone(),
-            "anchor_to_arweave": anchor_to_arweave
+            "anchor_to_arweave": anchor_to_arweave,
+            "encryption_mode": record.encryption_mode.clone()
         }),
     )
     .await;
@@ -4433,7 +4757,7 @@ async fn create_document_version_handler(
     State(st): State<AppState>,
     headers: HeaderMap,
     Path(parent_doc_id): Path<uuid::Uuid>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
@@ -4446,96 +4770,57 @@ async fn create_document_version_handler(
         ));
     }
 
-    let mut file_bytes = None;
-    let mut label = None;
-    let mut mime_type = None;
-    let mut original_name = None;
-    let mut anchor_to_arweave = auto_anchor_enabled();
-    let mut change_summary: Option<String> = None;
-    let mut editor_mode: Option<String> = None;
-    let mut before_hash_hex: Option<String> = None;
+    let parsed = parse_document_multipart(multipart, "version upload", auto_anchor_enabled()).await?;
+    let ParsedMultipartUpload {
+        file_bytes,
+        label: parsed_label,
+        mime_type: parsed_mime_type,
+        original_name,
+        anchor_to_arweave,
+        encryption_source,
+        change_summary,
+        editor_mode,
+        before_hash_hex,
+    } = parsed;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| multipart_error("Version upload stream failed", e))?
-    {
-        match field.name().unwrap_or("") {
-            "file" => {
-                mime_type = field.content_type().map(ToOwned::to_owned);
-                original_name = field.file_name().map(ToOwned::to_owned);
-                file_bytes = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| multipart_error("Reading version file failed", e))?
-                        .to_vec(),
-                );
-            }
-            "label" => {
-                label = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading version label failed", e))?,
-                )
-            }
-            "anchor_to_arweave" => {
-                anchor_to_arweave = bool_from_form_text(
-                    &field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading version Arweave flag failed", e))?,
-                )
-            }
-            "change_summary" => {
-                change_summary = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading change summary failed", e))?,
-                )
-            }
-            "editor_mode" => {
-                editor_mode = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading editor mode failed", e))?,
-                )
-            }
-            "before_hash_hex" => {
-                before_hash_hex = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| multipart_error("Reading before snapshot hash failed", e))?,
-                )
-            }
-            _ => {}
-        }
-    }
-
-    let bytes =
-        file_bytes.ok_or_else(|| AppError::BadRequest("No version file uploaded".into()))?;
-    let mime_type = mime_type.unwrap_or_else(|| parent.mime_type.clone());
-    let label = label
+    let bytes = file_bytes.ok_or_else(|| AppError::BadRequest("No version file uploaded".into()))?;
+    let label = parsed_label
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .or(original_name)
         .or(parent.label.clone());
+    let encryption_source = encryption_source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
-    let record = create_document_record(
-        &st,
-        &wallet,
-        &bytes,
-        label,
-        mime_type,
-        Some(parent_doc_id),
-        Some(parent.version),
-        anchor_to_arweave,
-    )
-    .await?;
+    let record = if encryption_source == Some(CLIENT_ENCRYPTED_UPLOAD_MODE) {
+        create_document_record_from_client_envelope(
+            &st,
+            &wallet,
+            &bytes,
+            label,
+            Some(parent.mime_type.clone()),
+            Some(parent_doc_id),
+            Some(parent.version),
+            anchor_to_arweave,
+        )
+        .await?
+    } else {
+        let mime_type = parsed_mime_type
+            .unwrap_or_else(|| parent.mime_type.clone());
+        create_document_record(
+            &st,
+            &wallet,
+            &bytes,
+            label,
+            mime_type,
+            Some(parent_doc_id),
+            Some(parent.version),
+            anchor_to_arweave,
+        )
+        .await?
+    };
 
     sqlx::query(
         "insert into document_events (doc_id, actor_wallet, event_type, payload) values ($1,$2,'VERSION_CREATED',$3)",
@@ -4553,7 +4838,7 @@ async fn create_document_version_handler(
             "parent_hash_hex": parent.hash_hex,
             "parent_version": parent.version,
             "arweave_tx": record.arweave_tx,
-            "encryption_mode": "pq_envelope_server_managed",
+            "encryption_mode": record.encryption_mode,
             "editor_mode": editor_mode,
             "change_summary": change_summary,
             "before_snapshot_hash_hex": before_hash_hex
@@ -4582,7 +4867,8 @@ async fn create_document_version_handler(
             "arweave_tx": record.arweave_tx.clone(),
             "anchor_to_arweave": anchor_to_arweave,
             "editor_mode": editor_mode,
-            "change_summary": change_summary
+            "change_summary": change_summary,
+            "encryption_mode": record.encryption_mode.clone()
         }),
     )
     .await;
@@ -4992,6 +5278,9 @@ async fn share_doc_handler(
     let one_time_use = body.one_time_use.unwrap_or(false);
     let download_allowed = body.download_allowed.unwrap_or(true);
     let allow_guest_sign = body.allow_guest_sign;
+    let anchor_to_arweave = body
+        .anchor_to_arweave
+        .unwrap_or_else(auto_share_anchor_enabled);
     let recipient_chain = requested_wallet.as_deref().map(|wallet| {
         body.recipient_chain
             .as_deref()
@@ -5020,11 +5309,30 @@ async fn share_doc_handler(
     } else {
         "created"
     };
+    let share_anchor_hash_hex = anchor_to_arweave.then(|| {
+        share_anchor_hash_hex(
+            doc_id,
+            &hash_hex,
+            &sender,
+            &sender_chain,
+            recipient_wallet.as_deref(),
+            recipient_chain.as_deref(),
+            recipient_name.as_deref(),
+            requested_email.as_deref(),
+            requested_phone.as_deref(),
+            body.note.as_deref(),
+            envelope_id,
+            expires_at,
+            one_time_use,
+            download_allowed,
+            allow_guest_sign,
+        )
+    });
 
     sqlx::query(
         r#"insert into document_shares
-        (doc_id, sender_wallet, recipient_wallet, recipient_chain, recipient_name, envelope_id, note, recipient_email, recipient_phone, access_token_hash, expires_at, one_time_use, download_allowed, allow_guest_sign, status, delivery_json)
-        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)"#,
+        (doc_id, sender_wallet, recipient_wallet, recipient_chain, recipient_name, envelope_id, note, recipient_email, recipient_phone, access_token_hash, expires_at, one_time_use, download_allowed, allow_guest_sign, status, delivery_json, share_anchor_hash_hex, share_arweave_tx, share_anchored_at)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,null,null)"#,
     )
     .bind(doc_id)
     .bind(&sender)
@@ -5042,6 +5350,7 @@ async fn share_doc_handler(
     .bind(allow_guest_sign)
     .bind(initial_status)
     .bind(json!([]))
+    .bind(&share_anchor_hash_hex)
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -5088,6 +5397,83 @@ async fn share_doc_handler(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    let mut share_arweave_tx: Option<String> = None;
+    let mut share_anchor_error: Option<String> = None;
+    if let Some(anchor_hash_hex) = share_anchor_hash_hex.clone() {
+        let client = crate::arweave::ArweaveClient::from_env();
+        let payload = crate::arweave::ArweaveAnchorPayload {
+            kind: "share_event_hash",
+            hash_hex: &anchor_hash_hex,
+            label: label.as_deref(),
+        };
+        match client.anchor_hash(&payload).await {
+            Ok(tx_id) => {
+                share_arweave_tx = Some(tx_id.clone());
+                sqlx::query(
+                    "update document_shares set share_arweave_tx = $2, share_anchored_at = now() where access_token_hash = $1",
+                )
+                .bind(&access_token_hash)
+                .bind(&tx_id)
+                .execute(&st.db)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+
+                insert_document_event(
+                    &st.db,
+                    doc_id,
+                    &sender,
+                    "SHARE_ANCHORED",
+                    custody_payload(
+                        json!({
+                            "envelope_id": envelope_id,
+                            "share_anchor_hash_hex": anchor_hash_hex,
+                            "share_arweave_tx": tx_id
+                        }),
+                        &session,
+                        &headers,
+                    ),
+                )
+                .await?;
+                record_growth_event(
+                    &st.db,
+                    "SHARE_ANCHORED",
+                    "wallet",
+                    Some(&sender),
+                    Some(&session.chain),
+                    Some(&session.session_id),
+                    Some(doc_id),
+                    Some(envelope_id),
+                    None,
+                    json!({
+                        "recipient_chain": recipient_chain.clone(),
+                        "share_anchor_hash_hex": anchor_hash_hex,
+                        "share_arweave_tx": tx_id
+                    }),
+                )
+                .await;
+            }
+            Err(err) => {
+                share_anchor_error = Some(err.to_string());
+                insert_document_event(
+                    &st.db,
+                    doc_id,
+                    &sender,
+                    "SHARE_ANCHOR_FAILED",
+                    custody_payload(
+                        json!({
+                            "envelope_id": envelope_id,
+                            "share_anchor_hash_hex": anchor_hash_hex,
+                            "error": share_anchor_error
+                        }),
+                        &session,
+                        &headers,
+                    ),
+                )
+                .await?;
+            }
+        }
+    }
+
     insert_document_event(
         &st.db,
         doc_id,
@@ -5107,7 +5493,11 @@ async fn share_doc_handler(
                 "expires_at": expires_at,
                 "one_time_use": one_time_use,
                 "download_allowed": download_allowed,
-                "allow_guest_sign": allow_guest_sign
+                "allow_guest_sign": allow_guest_sign,
+                "share_anchor_hash_hex": share_anchor_hash_hex,
+                "share_arweave_tx": share_arweave_tx,
+                "share_anchor_error": share_anchor_error,
+                "anchor_to_arweave": anchor_to_arweave
             }),
             &session,
             &headers,
@@ -5174,7 +5564,9 @@ async fn share_doc_handler(
             "status": final_status,
             "one_time_use": one_time_use,
             "download_allowed": download_allowed,
-            "allow_guest_sign": allow_guest_sign
+            "allow_guest_sign": allow_guest_sign,
+            "anchor_to_arweave": anchor_to_arweave,
+            "share_arweave_tx": share_arweave_tx.clone()
         }),
     )
     .await;
@@ -5196,6 +5588,10 @@ async fn share_doc_handler(
         "one_time_use": one_time_use,
         "download_allowed": download_allowed,
         "allow_guest_sign": allow_guest_sign,
+        "anchor_to_arweave": anchor_to_arweave,
+        "share_anchor_hash_hex": share_anchor_hash_hex,
+        "share_arweave_tx": share_arweave_tx,
+        "share_anchor_error": share_anchor_error,
         "delivery": deliveries,
         "delivery_errors": delivery_errors
     })))
@@ -5489,6 +5885,9 @@ async fn public_envelope_handler(
             s.annotation_json,
             s.expires_at,
             s.revoked_at,
+            s.share_anchor_hash_hex,
+            s.share_arweave_tx,
+            s.share_anchored_at,
             s.one_time_use,
             s.download_allowed,
             s.allow_guest_sign,
@@ -5623,6 +6022,9 @@ async fn public_envelope_handler(
         "one_time_use": one_time_use,
         "download_allowed": download_allowed,
         "allow_guest_sign": allow_guest_sign,
+        "share_anchor_hash_hex": row.get::<Option<String>,_>("share_anchor_hash_hex"),
+        "share_arweave_tx": row.get::<Option<String>,_>("share_arweave_tx"),
+        "share_anchored_at": row.get::<Option<chrono::DateTime<chrono::Utc>>,_>("share_anchored_at"),
         "allowed_signature_types": allowed_signature_types,
         "label": row.get::<Option<String>,_>("label"),
         "hash_hex": row.get::<String,_>("hash_hex"),
