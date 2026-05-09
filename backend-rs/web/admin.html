@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TIDBIT · Admin Console</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Private TIDBIT growth and operations console.">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="theme-color" content="#09162b">
+  <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/admin.js" defer></script>
+</head>
+<body>
+  <div class="container">
+    <section class="hero panel compact-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Private Operations</p>
+        <h1>TIDBIT Growth Console</h1>
+        <p class="hero-text">
+          Wallet-authenticated internal analytics for growth, activation, usage, and recent activity.
+        </p>
+      </div>
+      <div class="hero-actions">
+        <div class="app-version-badge">Admin</div>
+        <div id="adminWindowBadge" class="app-version-badge">30d</div>
+        <button id="refreshAdminBtn" class="button-secondary" type="button">Refresh</button>
+        <button id="logoutAdminBtn" class="button-secondary" type="button">Logout</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div id="adminStatus" class="session-card">Checking session and access…</div>
+    </section>
+
+    <div id="adminContent" class="hidden">
+      <section class="grid two-up">
+        <div class="panel">
+          <h3>Admin Session</h3>
+          <div id="adminSessionInfo" class="session-card">Loading admin session…</div>
+        </div>
+        <div class="panel">
+          <h3>Tracking State</h3>
+          <div id="trackingInfo" class="session-card">Loading tracking state…</div>
+        </div>
+      </section>
+
+      <section class="grid stat-grid" id="adminKpis"></section>
+      <section class="grid stat-grid" id="adminUsage"></section>
+      <section class="grid stat-grid" id="adminFunnel"></section>
+      <section class="grid stat-grid" id="acquisitionSummary"></section>
+
+      <section class="grid two-up">
+        <div class="panel">
+          <h3>Acquisition Sources</h3>
+          <div id="acquisitionSources" class="doc-grid">Loading acquisition sources…</div>
+        </div>
+        <div class="panel">
+          <h3>Referrers</h3>
+          <div id="acquisitionReferrers" class="doc-grid">Loading referrers…</div>
+        </div>
+      </section>
+
+      <section class="grid stat-grid" id="retentionSummary"></section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Retention Cohorts</h3>
+            <p class="muted">Retention here means a wallet returned at least 1, 7, or 30 days after its first seen date.</p>
+          </div>
+        </div>
+        <div id="retentionCohorts" class="inbox-list">Loading retention cohorts…</div>
+      </section>
+
+      <section class="grid two-up">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Share Conversion</h3>
+              <p class="muted">Send to open to download to sign across shares created inside the selected window.</p>
+            </div>
+          </div>
+          <div id="shareConversion" class="grid stat-grid">Loading share conversion…</div>
+        </div>
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Billing Conversion</h3>
+              <p class="muted">This lights up as subscription rows and Stripe linkage appear. Until checkout is live, this mostly shows trial coverage.</p>
+            </div>
+          </div>
+          <div id="billingSummary" class="grid stat-grid">Loading billing conversion…</div>
+        </div>
+      </section>
+
+      <section class="grid two-up">
+        <div class="panel">
+          <div class="section-head">
+            <div>
+              <h3>Share Channels</h3>
+              <p class="muted">Multi-route shares count once in each configured channel.</p>
+            </div>
+          </div>
+          <div id="shareChannels" class="doc-grid">Loading share channels…</div>
+        </div>
+        <div class="panel">
+          <h3>Billing Statuses</h3>
+          <div id="billingStatuses" class="doc-grid">Loading billing statuses…</div>
+        </div>
+      </section>
+
+      <section class="grid two-up">
+        <div class="panel">
+          <h3>Chain Breakdown</h3>
+          <div id="chainBreakdown" class="doc-grid">Loading chain breakdown…</div>
+        </div>
+        <div class="panel">
+          <h3>Wallet Activity</h3>
+          <div id="walletActivity" class="doc-grid">Loading wallet activity…</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Daily Trend</h3>
+            <p class="muted">New wallets, uploads, shares, signs, and tracked activity across the selected window.</p>
+          </div>
+        </div>
+        <div id="dailySeries" class="inbox-list">Loading daily trend…</div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h3>Recent Tracked Activity</h3>
+            <p class="muted">This feed comes from the new growth event stream and becomes more useful as the app is used.</p>
+          </div>
+        </div>
+        <div id="recentEvents" class="inbox-list">Loading recent events…</div>
+      </section>
+    </div>
+  </div>
+</body>
+</html>

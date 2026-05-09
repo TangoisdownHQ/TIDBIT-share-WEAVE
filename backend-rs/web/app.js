@@ -27,6 +27,25 @@ function getSessionId() {
 function clearSession() {
   localStorage.removeItem("TIDBIT_SESSION_ID");
 }
+function getVisitorId() {
+  if (window.TidbitTelemetry?.getVisitorId) {
+    return window.TidbitTelemetry.getVisitorId();
+  }
+  let visitorId = localStorage.getItem("TIDBIT_VISITOR_ID_V1");
+  if (!visitorId) {
+    visitorId =
+      typeof crypto?.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `tidbit-visitor-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem("TIDBIT_VISITOR_ID_V1", visitorId);
+  }
+  return visitorId;
+}
+function getAttributionSnapshot() {
+  return window.TidbitTelemetry?.getAttributionSnapshot
+    ? window.TidbitTelemetry.getAttributionSnapshot()
+    : null;
+}
 function getDeviceId() {
   let deviceId = localStorage.getItem("TIDBIT_DEVICE_ID");
   if (!deviceId) {
@@ -44,6 +63,7 @@ function authHeaders(extra = {}) {
   const sid = getSessionId();
   if (sid) headers["x-session-id"] = sid;
   headers["x-device-id"] = getDeviceId();
+  headers["x-visitor-id"] = getVisitorId();
   return headers;
 }
 
@@ -385,7 +405,13 @@ Version: 1`;
     const verifyRes = await fetch(`${API}/api/identity/evm/verify`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ session_id, address, signature }),
+      body: JSON.stringify({
+        session_id,
+        address,
+        signature,
+        visitor_id: getVisitorId(),
+        attribution: getAttributionSnapshot(),
+      }),
     });
 
     if (!verifyRes.ok) throw new Error(await verifyRes.text());
@@ -437,7 +463,13 @@ async function loginWithPhantom() {
     const verifyRes = await fetch(`${API}/api/identity/sol/verify`, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ session_id, address, signature }),
+      body: JSON.stringify({
+        session_id,
+        address,
+        signature,
+        visitor_id: getVisitorId(),
+        attribution: getAttributionSnapshot(),
+      }),
     });
 
     if (!verifyRes.ok) throw new Error(await verifyRes.text());
@@ -943,6 +975,20 @@ async function loadSessionInfo() {
   if (signatureMode && !signatureMode.dataset.userSelected) {
     signatureMode.value = currentChain === "sol" ? "sol_ed25519" : "evm_personal_sign";
     toggleSignatureMode();
+  }
+}
+
+async function loadAdminConsoleAccess() {
+  const link = document.getElementById("adminConsoleLink");
+  if (!link) return;
+
+  try {
+    const access = await apiGet("/api/admin/access");
+    if (!access?.console_path) return;
+    link.href = access.console_path;
+    link.classList.remove("hidden");
+  } catch (_) {
+    link.classList.add("hidden");
   }
 }
 
@@ -2733,7 +2779,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   if (document.getElementById("docList")) {
-    loadSessionInfo();
+    loadSessionInfo().then(() => loadAdminConsoleAccess()).catch(() => {});
     loadSessionHistory().catch((err) => alert(err.message));
     loadOverview().catch((err) => alert(err.message));
     loadDocuments()

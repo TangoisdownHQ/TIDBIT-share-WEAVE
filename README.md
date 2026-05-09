@@ -280,7 +280,9 @@ Recommended Railway setup:
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `SUPABASE_BUCKET`
    - `PUBLIC_APP_URL`
+   - `ADMIN_WALLETS`
 4. Optional environment variables:
+   - `ADMIN_CONSOLE_PATH`
    - `RESEND_API_KEY`
    - `RESEND_FROM_EMAIL`
    - `TWILIO_ACCOUNT_SID`
@@ -299,6 +301,12 @@ Production domain layout:
 - `app.tidbitshare.com` → authenticated app
 
 Railway should be pointed at the GitHub repo deployment path, not a bucket/function model. This app needs a live Rust server, Supabase connectivity, and runtime auth/policy checks.
+
+Admin analytics notes:
+
+- `ADMIN_WALLETS` should be a comma-separated allowlist such as `evm:0xabc...,sol:YourSolAddress`.
+- `ADMIN_CONSOLE_PATH` defaults to `/ops`. Set it to an unlinked path if you want a less discoverable console URL.
+- The admin console itself is marked `noindex`, but access control is enforced by the admin wallet allowlist, not by path secrecy alone.
 
 ## CLI Examples
 

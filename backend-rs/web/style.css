@@ -742,6 +742,25 @@ progress {
   font-weight: 600;
 }
 
+.admin-error {
+  border-color: rgba(240, 107, 127, 0.34);
+  background: linear-gradient(180deg, rgba(72, 16, 27, 0.82), rgba(23, 9, 14, 0.92));
+}
+
+.admin-bar {
+  height: 10px;
+  margin-top: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.admin-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(210, 71, 93, 0.85), rgba(64, 111, 221, 0.88));
+}
+
 .modal-shell {
   position: fixed;
   inset: 0;

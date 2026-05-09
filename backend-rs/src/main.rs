@@ -19,7 +19,7 @@ mod storage;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::http::{header, HeaderValue, Method, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
@@ -29,6 +29,7 @@ use clap::Parser;
 use cli::commands::{auth, c2c as cli_c2c, doc, wallet};
 use cli::parser::{Cli, Commands};
 use hmac::{Hmac, Mac};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -36,27 +37,29 @@ use std::collections::HashMap;
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::error::AppError;
-use crate::identity_web::evm::{evm_login_message, verify_evm_signature, EvmNonceResponse, EvmVerifyRequest};
-use crate::identity_web::sol::verify_solana_signature;
-use crate::identity_web::state::WalletSession;
-use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
 use crate::crypto::aes_gcm;
-use crate::sqlx::postgres::PgPoolOptions;
-use crate::sqlx::{PgPool, Row};
-use crate::models::{
-    AgentRegisterRequest, AgentSignRequest, AgentVersionRequest, DocumentPolicyUpdateRequest,
-    InboxActionRequest, PublicEnvelopeSignRequest, ShareRequest, SignRequest, SignerAnnotationField,
-};
 use crate::crypto::canonical::{
     canonicalize::canonical_json,
-    keystore::{load_mlkem_keypair_if_exists, MlKemKeypairFile},
     kem::mlkem_generate_keypair_b64,
-    CanonicalDocumentV1,
-    DocumentEnvelopeV1,
+    keystore::{load_mlkem_keypair_if_exists, MlKemKeypairFile},
+    CanonicalDocumentV1, DocumentEnvelopeV1,
+};
+use crate::delivery::{send_email_invite, send_sms_invite, DeliveryOutcome};
+use crate::error::AppError;
+use crate::identity_web::evm::{
+    evm_login_message, verify_evm_signature, EvmNonceResponse, EvmVerifyRequest,
+};
+use crate::identity_web::sol::verify_solana_signature;
+use crate::identity_web::state::WalletSession;
+use crate::models::{
+    AgentRegisterRequest, AgentSignRequest, AgentVersionRequest, DocumentPolicyUpdateRequest,
+    InboxActionRequest, PublicEnvelopeSignRequest, ShareRequest, SignRequest,
+    SignerAnnotationField,
 };
 use crate::pqc::dilithium;
 use crate::pqc::sha3 as pqc_sha3;
+use crate::sqlx::postgres::PgPoolOptions;
+use crate::sqlx::{PgPool, Row};
 use storage::supabase::SupabaseStorage;
 
 // ================================================================
@@ -68,6 +71,14 @@ struct AppState {
     auth: identity_web::AuthState,
     db: PgPool,
     storage: SupabaseStorage,
+    admin_wallets: Vec<AdminWalletIdentity>,
+    admin_console_path: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AdminWalletIdentity {
+    wallet: String,
+    chain: String,
 }
 
 struct DocumentAccessRecord {
@@ -156,6 +167,8 @@ async fn start_server() -> anyhow::Result<()> {
 
     eprintln!("boot: connected to Supabase Postgres");
     let auth_state = identity_web::AuthState::new(pool.clone());
+    let admin_wallets = parse_admin_wallet_allowlist();
+    let admin_console_path = admin_console_path_from_env();
 
     eprintln!("boot: loading storage environment");
     let storage = SupabaseStorage::new(
@@ -168,6 +181,8 @@ async fn start_server() -> anyhow::Result<()> {
         auth: auth_state,
         db: pool,
         storage,
+        admin_wallets,
+        admin_console_path: admin_console_path.clone(),
     };
 
     let static_files = ServeDir::new("web").append_index_html_on_directories(true);
@@ -187,13 +202,28 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/identity/sol/nonce", post(sol_nonce_handler_app))
         .route("/api/identity/sol/verify", post(sol_verify_handler_app))
         .route("/api/public/verify", post(public_verify_handler))
+        .route("/api/analytics/track", post(analytics_track_handler))
         .route("/api/public/envelope/:token", get(public_envelope_handler))
-        .route("/api/public/envelope/:token/blob", get(public_envelope_blob_handler))
-        .route("/api/public/envelope/:token/sign", post(public_envelope_sign_handler))
+        .route(
+            "/api/public/envelope/:token/blob",
+            get(public_envelope_blob_handler),
+        )
+        .route(
+            "/api/public/envelope/:token/sign",
+            post(public_envelope_sign_handler),
+        )
         .route("/api/agent/register", post(register_agent_handler))
         .route("/api/agent/list", get(list_agents_handler))
-        .route("/api/agent/:id/rotate-token", post(rotate_agent_token_handler))
+        .route(
+            "/api/agent/:id/rotate-token",
+            post(rotate_agent_token_handler),
+        )
         .route("/api/agent/:id/revoke", post(revoke_agent_handler))
+        .route("/api/admin/access", get(admin_access_handler))
+        .route(
+            "/api/admin/growth/overview",
+            get(admin_growth_overview_handler),
+        )
         .route("/api/overview", get(overview_handler))
         .route("/api/account/status", get(account_status_handler))
         .route("/api/doc/list", get(list_docs_handler))
@@ -201,10 +231,19 @@ async fn start_server() -> anyhow::Result<()> {
         .route("/api/activity/shared", get(list_shared_activity_handler))
         .route("/api/doc/:id/events", get(list_doc_events_handler))
         .route("/api/doc/:id/evidence", get(export_doc_evidence_handler))
-        .route("/api/doc/:id/evidence/anchor", post(anchor_evidence_bundle_handler))
-        .route("/api/doc/:id/policy", get(get_document_policy_handler).post(set_document_policy_handler))
+        .route(
+            "/api/doc/:id/evidence/anchor",
+            post(anchor_evidence_bundle_handler),
+        )
+        .route(
+            "/api/doc/:id/policy",
+            get(get_document_policy_handler).post(set_document_policy_handler),
+        )
         .route("/api/doc/upload", post(upload_doc_handler))
-        .route("/api/doc/:id/version", post(create_document_version_handler))
+        .route(
+            "/api/doc/:id/version",
+            post(create_document_version_handler),
+        )
         .route("/api/doc/:id/review", get(review_doc_handler))
         .route("/api/doc/:id/blob", get(doc_blob_handler))
         .route("/api/doc/:id/download", get(download_doc_handler))
@@ -217,17 +256,30 @@ async fn start_server() -> anyhow::Result<()> {
         )
         .route("/api/agent/doc/:id/review", get(agent_review_doc_handler))
         .route("/api/agent/doc/:id/sign", post(agent_sign_doc_handler))
-        .route("/api/agent/doc/:id/version", post(agent_version_doc_handler))
+        .route(
+            "/api/agent/doc/:id/version",
+            post(agent_version_doc_handler),
+        )
         .route("/api/inbox", get(list_inbox_handler))
         .route("/api/inbox/:envelope_id/action", post(inbox_action_handler))
         .route("/auth/session", get(session_info_handler))
         .route("/auth/sessions", get(list_sessions_handler))
         .route("/auth/session/rotate", post(rotate_session_handler))
-        .route("/auth/session/:session_id/revoke", post(revoke_specific_session_handler))
+        .route(
+            "/auth/session/:session_id/revoke",
+            post(revoke_specific_session_handler),
+        )
         .route("/auth/logout", post(logout_handler))
-        .fallback_service(static_files)
         .with_state(state)
         .layer(configured_cors_layer()?);
+    let app = app.route(admin_console_path.as_str(), get(admin_console_handler));
+    let admin_console_trailing = format!("{}/", admin_console_path.trim_end_matches('/'));
+    let app = if admin_console_trailing != admin_console_path {
+        app.route(admin_console_trailing.as_str(), get(admin_console_handler))
+    } else {
+        app
+    };
+    let app = app.fallback_service(static_files);
 
     let port = std::env::var("PORT")
         .ok()
@@ -252,7 +304,11 @@ async fn health_handler() -> &'static str {
     "OK"
 }
 
-fn wallet_can_access_document(owner_wallet: &str, actor_wallet: &str, is_shared_with_actor: bool) -> bool {
+fn wallet_can_access_document(
+    owner_wallet: &str,
+    actor_wallet: &str,
+    is_shared_with_actor: bool,
+) -> bool {
     owner_wallet.eq_ignore_ascii_case(actor_wallet) || is_shared_with_actor
 }
 
@@ -278,6 +334,227 @@ fn normalize_wallet_for_chain(wallet: &str, chain: &str) -> String {
         trimmed.to_ascii_lowercase()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn admin_console_path_from_env() -> String {
+    let configured = std::env::var("ADMIN_CONSOLE_PATH").unwrap_or_else(|_| "/ops".to_string());
+    let raw = configured.split(['?', '#']).next().unwrap_or("/ops");
+    let segments = raw
+        .split('/')
+        .filter_map(|segment| {
+            let cleaned = segment
+                .trim()
+                .chars()
+                .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+                .collect::<String>();
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if segments.is_empty() {
+        "/ops".to_string()
+    } else {
+        format!("/{}", segments.join("/"))
+    }
+}
+
+fn parse_admin_wallet_allowlist() -> Vec<AdminWalletIdentity> {
+    let configured = std::env::var("ADMIN_WALLETS").unwrap_or_default();
+    let mut wallets = Vec::new();
+
+    for raw_entry in configured.split([',', ';', '\n']) {
+        let entry = raw_entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+
+        let (chain, wallet_value) = if let Some((prefix, value)) = entry.split_once(':') {
+            if let Some(chain) = canonical_chain(prefix) {
+                (chain.to_string(), value.trim().to_string())
+            } else {
+                (infer_wallet_chain(entry).to_string(), entry.to_string())
+            }
+        } else {
+            (infer_wallet_chain(entry).to_string(), entry.to_string())
+        };
+
+        let wallet = normalize_wallet_for_chain(&wallet_value, &chain);
+        if wallet.is_empty() {
+            continue;
+        }
+
+        let identity = AdminWalletIdentity { wallet, chain };
+        if !wallets.iter().any(|existing| existing == &identity) {
+            wallets.push(identity);
+        }
+    }
+
+    wallets
+}
+
+fn is_admin_wallet(st: &AppState, wallet: &str, chain: &str) -> bool {
+    let canonical = canonical_chain(chain).unwrap_or_else(|| infer_wallet_chain(wallet));
+    let normalized = normalize_wallet_for_chain(wallet, canonical);
+    st.admin_wallets
+        .iter()
+        .any(|candidate| candidate.chain == canonical && candidate.wallet == normalized)
+}
+
+async fn require_admin_session(
+    st: &AppState,
+    headers: &HeaderMap,
+) -> Result<WalletSession, AppError> {
+    let session = require_session_from_headers(st, headers).await?;
+    if !is_admin_wallet(st, &session.wallet, &session.chain) {
+        return Err(AppError::Forbidden(
+            "This wallet is not allowed to access the admin console".into(),
+        ));
+    }
+    Ok(session)
+}
+
+fn sanitize_tracking_text(value: Option<&str>, max_len: usize) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(max_len).collect::<String>())
+        .filter(|value| !value.is_empty())
+}
+
+fn visitor_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-visitor-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| sanitize_tracking_text(Some(value), 160))
+}
+
+fn tracking_value_text(
+    value: Option<&serde_json::Value>,
+    key: &str,
+    max_len: usize,
+) -> Option<String> {
+    value
+        .and_then(|json| json.get(key))
+        .and_then(|item| item.as_str())
+        .and_then(|item| sanitize_tracking_text(Some(item), max_len))
+}
+
+fn merge_tracking_properties(
+    mut base: serde_json::Map<String, serde_json::Value>,
+    visitor_id: Option<&str>,
+    attribution: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let visitor_id = visitor_id.and_then(|value| sanitize_tracking_text(Some(value), 160));
+    if let Some(visitor_id) = visitor_id {
+        base.insert("visitor_id".into(), json!(visitor_id));
+    }
+
+    for (key, max_len) in [
+        ("page_path", 512usize),
+        ("page_title", 256usize),
+        ("referrer", 1024usize),
+        ("referrer_host", 256usize),
+        ("landing_path", 512usize),
+        ("first_landing_path", 512usize),
+        ("first_referrer", 1024usize),
+        ("first_referrer_host", 256usize),
+        ("utm_source", 256usize),
+        ("utm_medium", 256usize),
+        ("utm_campaign", 256usize),
+        ("utm_term", 256usize),
+        ("utm_content", 256usize),
+        ("first_utm_source", 256usize),
+        ("first_utm_medium", 256usize),
+        ("first_utm_campaign", 256usize),
+        ("first_utm_term", 256usize),
+        ("first_utm_content", 256usize),
+    ] {
+        if let Some(text) = tracking_value_text(attribution, key, max_len) {
+            base.insert(key.into(), json!(text));
+        }
+    }
+
+    serde_json::Value::Object(base)
+}
+
+async fn insert_growth_event(
+    db: &PgPool,
+    event_type: &str,
+    actor_kind: &str,
+    wallet: Option<&str>,
+    chain: Option<&str>,
+    session_id: Option<&str>,
+    doc_id: Option<uuid::Uuid>,
+    envelope_id: Option<uuid::Uuid>,
+    agent_id: Option<uuid::Uuid>,
+    properties: serde_json::Value,
+) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        insert into growth_events (
+            id,
+            event_type,
+            actor_kind,
+            wallet,
+            chain,
+            session_id,
+            doc_id,
+            envelope_id,
+            agent_id,
+            properties_json
+        )
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        "#,
+    )
+    .bind(uuid::Uuid::new_v4())
+    .bind(event_type)
+    .bind(actor_kind)
+    .bind(wallet.map(str::trim).filter(|value| !value.is_empty()))
+    .bind(chain.and_then(canonical_chain))
+    .bind(session_id.map(str::trim).filter(|value| !value.is_empty()))
+    .bind(doc_id)
+    .bind(envelope_id)
+    .bind(agent_id)
+    .bind(properties)
+    .execute(db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(())
+}
+
+async fn record_growth_event(
+    db: &PgPool,
+    event_type: &str,
+    actor_kind: &str,
+    wallet: Option<&str>,
+    chain: Option<&str>,
+    session_id: Option<&str>,
+    doc_id: Option<uuid::Uuid>,
+    envelope_id: Option<uuid::Uuid>,
+    agent_id: Option<uuid::Uuid>,
+    properties: serde_json::Value,
+) {
+    if let Err(err) = insert_growth_event(
+        db,
+        event_type,
+        actor_kind,
+        wallet,
+        chain,
+        session_id,
+        doc_id,
+        envelope_id,
+        agent_id,
+        properties,
+    )
+    .await
+    {
+        eprintln!("warn: growth event recording failed: {err}");
     }
 }
 
@@ -313,6 +590,7 @@ fn configured_cors_layer() -> Result<CorsLayer, AppError> {
             header::ACCEPT,
             header::HeaderName::from_static("x-session-id"),
             header::HeaderName::from_static("x-device-id"),
+            header::HeaderName::from_static("x-visitor-id"),
             header::HeaderName::from_static("x-agent-token"),
         ])
         .allow_origin(header_values))
@@ -417,6 +695,40 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     .await?;
     sqlx::query(
         r#"
+        create table if not exists growth_events (
+            id uuid primary key,
+            event_type text not null,
+            actor_kind text not null,
+            wallet text null,
+            chain text null,
+            session_id text null,
+            doc_id uuid null,
+            envelope_id uuid null,
+            agent_id uuid null,
+            occurred_at timestamptz not null default now(),
+            properties_json jsonb not null default '{}'::jsonb
+        )
+        "#,
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_growth_events_occurred_at on growth_events (occurred_at desc)",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_growth_events_wallet on growth_events (wallet, chain, occurred_at desc)",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        "create index if not exists idx_growth_events_event_type on growth_events (event_type, occurred_at desc)",
+    )
+    .execute(db)
+    .await?;
+    sqlx::query(
+        r#"
         alter table document_shares
             add column if not exists access_token_hash text,
             add column if not exists expires_at timestamptz,
@@ -475,6 +787,954 @@ async fn ensure_runtime_schema(db: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct AdminGrowthQuery {
+    days: Option<i64>,
+}
+
+fn clamp_admin_days(days: Option<i64>) -> i64 {
+    days.unwrap_or(30).clamp(7, 180)
+}
+
+async fn admin_console_handler() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::HeaderName::from_static("x-robots-tag"),
+                HeaderValue::from_static("noindex, nofollow, noarchive"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store, max-age=0"),
+            ),
+        ],
+        Html(include_str!("../web/admin.html")),
+    )
+        .into_response()
+}
+
+async fn admin_access_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_admin_session(&st, &headers).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "wallet": session.wallet,
+        "chain": session.chain,
+        "console_path": st.admin_console_path
+    })))
+}
+
+async fn admin_growth_overview_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminGrowthQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let session = require_admin_session(&st, &headers).await?;
+    let days = clamp_admin_days(query.days);
+    let days_i32 = days as i32;
+
+    let kpis = sqlx::query(
+        r#"
+        with first_seen as (
+            select chain, wallet, min(created_at) as first_seen_at
+            from wallet_sessions
+            group by chain, wallet
+        )
+        select
+            (select count(*) from first_seen) as total_wallets,
+            (select count(*) from first_seen where first_seen_at >= now() - interval '1 day') as new_wallets_1d,
+            (select count(*) from first_seen where first_seen_at >= now() - interval '7 day') as new_wallets_7d,
+            (select count(*) from first_seen where first_seen_at >= now() - interval '30 day') as new_wallets_30d,
+            (select count(distinct chain || ':' || wallet) from wallet_sessions where last_seen_at >= now() - interval '1 day') as active_wallets_1d,
+            (select count(distinct chain || ':' || wallet) from wallet_sessions where last_seen_at >= now() - interval '7 day') as active_wallets_7d,
+            (select count(distinct chain || ':' || wallet) from wallet_sessions where last_seen_at >= now() - interval '30 day') as active_wallets_30d,
+            (select count(*) from wallet_sessions where created_at >= now() - interval '30 day') as wallet_logins_30d,
+            (select count(*) from wallet_sessions where revoked_at is null and expires_at > now()) as active_sessions_now,
+            (select count(distinct coalesce(device_id, session_id)) from wallet_sessions where last_seen_at >= now() - interval '30 day') as active_devices_30d,
+            (select count(*) from documents where is_deleted = false) as total_docs,
+            (select count(*) from documents where is_deleted = false and parent_id is not null) as total_versions,
+            (select count(*) from document_shares) as total_shares,
+            (select count(*) from document_events where event_type in ('SIGN', 'ENVELOPE_COMPLETED', 'AGENT_SIGN')) as total_sign_events,
+            (select count(*) from agent_identities where coalesce(is_active, true)) as total_agents
+        "#,
+    )
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let usage = sqlx::query(
+        r#"
+        select
+            (select count(*) from documents where is_deleted = false and parent_id is null and created_at >= now() - ($1::int * interval '1 day')) as uploads_window,
+            (select count(*) from documents where is_deleted = false and parent_id is not null and created_at >= now() - ($1::int * interval '1 day')) as versions_window,
+            (select count(*) from document_shares where created_at >= now() - ($1::int * interval '1 day')) as shares_window,
+            (select count(*) from document_events where event_type in ('SIGN', 'ENVELOPE_COMPLETED', 'AGENT_SIGN') and created_at >= now() - ($1::int * interval '1 day')) as signs_window,
+            (select count(*) from document_events where event_type = 'VIEW' and created_at >= now() - ($1::int * interval '1 day')) as views_window,
+            (select count(*) from document_events where event_type in ('DOWNLOAD', 'INBOX_DOWNLOADED') and created_at >= now() - ($1::int * interval '1 day')) as downloads_window,
+            (select count(*) from document_events where event_type like 'INBOX_%' and created_at >= now() - ($1::int * interval '1 day')) as inbox_actions_window,
+            (select count(*) from document_events where event_type = 'ENVELOPE_OPENED' and created_at >= now() - ($1::int * interval '1 day')) as public_opens_window,
+            (select count(*) from document_events where event_type = 'ENVELOPE_COMPLETED' and created_at >= now() - ($1::int * interval '1 day')) as public_completions_window,
+            (select count(*) from agent_identities where created_at >= now() - ($1::int * interval '1 day')) as agents_window
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let acquisition = sqlx::query(
+        r#"
+        with visitor_window as (
+            select nullif(properties_json->>'visitor_id', '') as visitor_id
+            from growth_events
+            where occurred_at >= now() - ($1::int * interval '1 day')
+              and actor_kind = 'visitor'
+              and event_type = 'PAGE_VIEW'
+        ),
+        visitor_rollup as (
+            select visitor_id
+            from visitor_window
+            where visitor_id is not null
+            group by visitor_id
+        ),
+        login_visitors as (
+            select distinct nullif(properties_json->>'visitor_id', '') as visitor_id
+            from growth_events
+            where event_type = 'WALLET_LOGIN'
+              and nullif(properties_json->>'visitor_id', '') is not null
+        )
+        select
+            (select count(*) from visitor_window) as page_views_window,
+            (select count(*) from visitor_rollup) as unique_visitors_window,
+            (select count(*) from visitor_rollup vr join login_visitors lv on lv.visitor_id = vr.visitor_id) as converted_visitors_window,
+            (
+                select count(*)
+                from visitor_rollup vr
+                left join login_visitors lv on lv.visitor_id = vr.visitor_id
+                where lv.visitor_id is null
+            ) as anonymous_visitors_window
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let acquisition_source_rows = sqlx::query(
+        r#"
+        with visitor_window as (
+            select
+                occurred_at,
+                nullif(properties_json->>'visitor_id', '') as visitor_id,
+                nullif(coalesce(properties_json->>'first_utm_source', properties_json->>'utm_source'), '') as utm_source,
+                nullif(coalesce(properties_json->>'first_utm_medium', properties_json->>'utm_medium'), '') as utm_medium,
+                nullif(coalesce(properties_json->>'first_utm_campaign', properties_json->>'utm_campaign'), '') as utm_campaign
+            from growth_events
+            where occurred_at >= now() - ($1::int * interval '1 day')
+              and actor_kind = 'visitor'
+              and event_type = 'PAGE_VIEW'
+        ),
+        first_touch as (
+            select distinct on (visitor_id)
+                visitor_id,
+                utm_source,
+                utm_medium,
+                utm_campaign
+            from visitor_window
+            where visitor_id is not null
+            order by visitor_id, occurred_at asc
+        ),
+        login_visitors as (
+            select distinct nullif(properties_json->>'visitor_id', '') as visitor_id
+            from growth_events
+            where event_type = 'WALLET_LOGIN'
+              and nullif(properties_json->>'visitor_id', '') is not null
+        )
+        select
+            coalesce(utm_source, 'direct') as source,
+            coalesce(utm_medium, 'none') as medium,
+            coalesce(utm_campaign, 'none') as campaign,
+            count(*) as visitors,
+            count(*) filter (where lv.visitor_id is not null) as converted
+        from first_touch ft
+        left join login_visitors lv on lv.visitor_id = ft.visitor_id
+        group by 1, 2, 3
+        order by visitors desc, converted desc, source asc, medium asc, campaign asc
+        limit 10
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let acquisition_referrer_rows = sqlx::query(
+        r#"
+        with visitor_window as (
+            select
+                occurred_at,
+                nullif(properties_json->>'visitor_id', '') as visitor_id,
+                nullif(coalesce(properties_json->>'first_referrer_host', properties_json->>'referrer_host'), '') as referrer_host
+            from growth_events
+            where occurred_at >= now() - ($1::int * interval '1 day')
+              and actor_kind = 'visitor'
+              and event_type = 'PAGE_VIEW'
+        ),
+        first_touch as (
+            select distinct on (visitor_id)
+                visitor_id,
+                referrer_host
+            from visitor_window
+            where visitor_id is not null
+            order by visitor_id, occurred_at asc
+        ),
+        login_visitors as (
+            select distinct nullif(properties_json->>'visitor_id', '') as visitor_id
+            from growth_events
+            where event_type = 'WALLET_LOGIN'
+              and nullif(properties_json->>'visitor_id', '') is not null
+        )
+        select
+            coalesce(referrer_host, 'direct') as referrer_host,
+            count(*) as visitors,
+            count(*) filter (where lv.visitor_id is not null) as converted
+        from first_touch ft
+        left join login_visitors lv on lv.visitor_id = ft.visitor_id
+        group by 1
+        order by visitors desc, converted desc, referrer_host asc
+        limit 10
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let funnel = sqlx::query(
+        r#"
+        select
+            (select count(*) from (select chain, wallet from wallet_sessions group by chain, wallet) t) as connected_wallets,
+            (select count(distinct owner_wallet) from documents where is_deleted = false) as wallets_uploaded,
+            (select count(distinct sender_wallet) from document_shares) as wallets_shared,
+            (
+                select count(distinct wallet) from (
+                    select actor_wallet as wallet
+                    from document_events
+                    where event_type in ('SIGN', 'AGENT_SIGN')
+                      and actor_wallet not like 'agent:%'
+                    union
+                    select signer_wallet as wallet
+                    from document_shares
+                    where signer_wallet is not null
+                ) signed_wallets
+            ) as wallets_signed,
+            (select count(distinct recipient_wallet) from document_shares where recipient_wallet is not null) as wallets_received,
+            (select count(distinct owner_wallet) from agent_identities where coalesce(is_active, true)) as wallets_with_agents
+        "#,
+    )
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let retention_summary = sqlx::query(
+        r#"
+        with wallet_rollup as (
+            select
+                chain,
+                wallet,
+                min(created_at) as first_seen_at,
+                max(last_seen_at) as last_seen_at
+            from wallet_sessions
+            group by chain, wallet
+        )
+        select
+            count(*) filter (where first_seen_at <= now() - interval '1 day') as eligible_1d,
+            count(*) filter (where first_seen_at <= now() - interval '1 day' and last_seen_at >= first_seen_at + interval '1 day') as retained_1d,
+            count(*) filter (where first_seen_at <= now() - interval '7 day') as eligible_7d,
+            count(*) filter (where first_seen_at <= now() - interval '7 day' and last_seen_at >= first_seen_at + interval '7 day') as retained_7d,
+            count(*) filter (where first_seen_at <= now() - interval '30 day') as eligible_30d,
+            count(*) filter (where first_seen_at <= now() - interval '30 day' and last_seen_at >= first_seen_at + interval '30 day') as retained_30d
+        from wallet_rollup
+        "#,
+    )
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let retention_rows = sqlx::query(
+        r#"
+        with wallet_rollup as (
+            select
+                chain,
+                wallet,
+                min(created_at) as first_seen_at,
+                max(last_seen_at) as last_seen_at
+            from wallet_sessions
+            group by chain, wallet
+        )
+        select
+            first_seen_at::date as cohort_day,
+            count(*) as cohort_size,
+            count(*) filter (where first_seen_at <= now() - interval '1 day') as eligible_1d,
+            count(*) filter (where first_seen_at <= now() - interval '1 day' and last_seen_at >= first_seen_at + interval '1 day') as retained_1d,
+            count(*) filter (where first_seen_at <= now() - interval '7 day') as eligible_7d,
+            count(*) filter (where first_seen_at <= now() - interval '7 day' and last_seen_at >= first_seen_at + interval '7 day') as retained_7d,
+            count(*) filter (where first_seen_at <= now() - interval '30 day') as eligible_30d,
+            count(*) filter (where first_seen_at <= now() - interval '30 day' and last_seen_at >= first_seen_at + interval '30 day') as retained_30d
+        from wallet_rollup
+        where first_seen_at::date >= current_date - ($1::int - 1)
+        group by 1
+        order by 1 asc
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let chain_breakdown_rows = sqlx::query(
+        r#"
+        with wallet_rollup as (
+            select
+                chain,
+                wallet,
+                min(created_at) as first_seen_at,
+                max(last_seen_at) as last_seen_at
+            from wallet_sessions
+            group by chain, wallet
+        ),
+        doc_rollup as (
+            select
+                case when owner_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                count(*) filter (where is_deleted = false) as docs_owned
+            from documents
+            group by 1
+        ),
+        share_rollup as (
+            select
+                case when sender_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                count(*) as shares_sent
+            from document_shares
+            group by 1
+        )
+        select
+            wr.chain,
+            count(*) as total_wallets,
+            count(*) filter (where wr.first_seen_at >= now() - interval '30 day') as new_wallets_30d,
+            count(*) filter (where wr.last_seen_at >= now() - interval '30 day') as active_wallets_30d,
+            coalesce(dr.docs_owned, 0) as docs_owned,
+            coalesce(sr.shares_sent, 0) as shares_sent
+        from wallet_rollup wr
+        left join doc_rollup dr on dr.chain = wr.chain
+        left join share_rollup sr on sr.chain = wr.chain
+        group by wr.chain, dr.docs_owned, sr.shares_sent
+        order by total_wallets desc, wr.chain asc
+        "#,
+    )
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let wallet_activity_rows = sqlx::query(
+        r#"
+        with wallet_rollup as (
+            select
+                chain,
+                wallet,
+                min(created_at) as first_seen_at,
+                max(last_seen_at) as last_seen_at,
+                count(*) as login_count
+            from wallet_sessions
+            group by chain, wallet
+        ),
+        doc_rollup as (
+            select
+                case when owner_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                owner_wallet as wallet,
+                count(*) filter (where is_deleted = false) as docs_owned
+            from documents
+            group by 1, 2
+        ),
+        share_rollup as (
+            select
+                case when sender_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                sender_wallet as wallet,
+                count(*) as shares_sent
+            from document_shares
+            group by 1, 2
+        ),
+        sign_rollup as (
+            select chain, wallet, count(*) as sign_count
+            from (
+                select
+                    case when actor_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                    actor_wallet as wallet
+                from document_events
+                where event_type in ('SIGN', 'AGENT_SIGN')
+                  and actor_wallet not like 'agent:%'
+                union all
+                select
+                    case when signer_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                    signer_wallet as wallet
+                from document_shares
+                where signer_wallet is not null
+            ) signed_wallets
+            group by chain, wallet
+        ),
+        agent_rollup as (
+            select
+                case when owner_wallet like '0x%' then 'evm' else 'sol' end as chain,
+                owner_wallet as wallet,
+                count(*) filter (where coalesce(is_active, true)) as agent_count
+            from agent_identities
+            group by 1, 2
+        )
+        select
+            wr.chain,
+            wr.wallet,
+            wr.first_seen_at,
+            wr.last_seen_at,
+            wr.login_count,
+            coalesce(dr.docs_owned, 0) as docs_owned,
+            coalesce(sr.shares_sent, 0) as shares_sent,
+            coalesce(sig.sign_count, 0) as sign_count,
+            coalesce(ar.agent_count, 0) as agent_count,
+            (
+                wr.login_count
+                + coalesce(dr.docs_owned, 0)
+                + coalesce(sr.shares_sent, 0)
+                + coalesce(sig.sign_count, 0)
+                + coalesce(ar.agent_count, 0)
+            ) as score
+        from wallet_rollup wr
+        left join doc_rollup dr on dr.chain = wr.chain and dr.wallet = wr.wallet
+        left join share_rollup sr on sr.chain = wr.chain and sr.wallet = wr.wallet
+        left join sign_rollup sig on sig.chain = wr.chain and sig.wallet = wr.wallet
+        left join agent_rollup ar on ar.chain = wr.chain and ar.wallet = wr.wallet
+        order by score desc, wr.last_seen_at desc
+        limit 12
+        "#,
+    )
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let share_conversion = sqlx::query(
+        r#"
+        with share_window as (
+            select
+                envelope_id,
+                viewed_at,
+                completed_at,
+                open_count,
+                completion_count,
+                status
+            from document_shares
+            where created_at >= now() - ($1::int * interval '1 day')
+        ),
+        downloads as (
+            select distinct envelope_id
+            from growth_events
+            where envelope_id is not null
+              and (
+                event_type = 'PUBLIC_ENVELOPE_DOWNLOADED'
+                or (event_type = 'INBOX_ACTION' and properties_json->>'action' = 'download')
+              )
+        )
+        select
+            count(*) as shares_sent,
+            count(*) filter (
+                where viewed_at is not null
+                   or open_count > 0
+                   or completed_at is not null
+                   or status in ('opened', 'accepted', 'completed')
+            ) as shares_opened,
+            count(*) filter (where downloads.envelope_id is not null) as shares_downloaded,
+            count(*) filter (
+                where completed_at is not null
+                   or completion_count > 0
+                   or status = 'completed'
+            ) as shares_completed
+        from share_window
+        left join downloads on downloads.envelope_id = share_window.envelope_id
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let share_channel_rows = sqlx::query(
+        r#"
+        with share_window as (
+            select
+                envelope_id,
+                recipient_wallet,
+                recipient_email,
+                recipient_phone,
+                delivery_json,
+                viewed_at,
+                completed_at,
+                open_count,
+                completion_count,
+                status
+            from document_shares
+            where created_at >= now() - ($1::int * interval '1 day')
+        ),
+        share_channels as (
+            select envelope_id, 'wallet'::text as channel from share_window where recipient_wallet is not null
+            union all
+            select envelope_id, 'email'::text as channel from share_window where recipient_email is not null
+            union all
+            select envelope_id, 'phone'::text as channel from share_window where recipient_phone is not null
+        ),
+        delivery_rows as (
+            select
+                sw.envelope_id,
+                case
+                    when delivery.value->>'channel' = 'sms' then 'phone'
+                    else delivery.value->>'channel'
+                end as channel,
+                delivery.value->>'status' as status
+            from share_window sw
+            cross join lateral jsonb_array_elements(coalesce(sw.delivery_json, '[]'::jsonb)) as delivery(value)
+        ),
+        downloads as (
+            select distinct envelope_id
+            from growth_events
+            where envelope_id is not null
+              and (
+                event_type = 'PUBLIC_ENVELOPE_DOWNLOADED'
+                or (event_type = 'INBOX_ACTION' and properties_json->>'action' = 'download')
+              )
+        )
+        select
+            sc.channel,
+            count(*) as share_touches,
+            count(*) filter (
+                where sw.viewed_at is not null
+                   or sw.open_count > 0
+                   or sw.completed_at is not null
+                   or sw.status in ('opened', 'accepted', 'completed')
+            ) as opened,
+            count(*) filter (where downloads.envelope_id is not null) as downloaded,
+            count(*) filter (
+                where sw.completed_at is not null
+                   or sw.completion_count > 0
+                   or sw.status = 'completed'
+            ) as completed,
+            count(*) filter (where dr.status = 'sent') as delivered,
+            count(*) filter (where dr.status = 'available_in_inbox') as inbox_available,
+            count(*) filter (
+                where dr.status in ('provider_error', 'provider_unavailable', 'provider_unconfigured')
+            ) as delivery_issues
+        from share_channels sc
+        join share_window sw on sw.envelope_id = sc.envelope_id
+        left join delivery_rows dr on dr.envelope_id = sc.envelope_id and dr.channel = sc.channel
+        left join downloads on downloads.envelope_id = sc.envelope_id
+        group by sc.channel
+        order by share_touches desc, sc.channel asc
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let daily_rows = sqlx::query(
+        r#"
+        with days as (
+            select generate_series(current_date - ($1::int - 1), current_date, interval '1 day')::date as day
+        ),
+        first_seen as (
+            select chain, wallet, min(created_at) as first_seen_at
+            from wallet_sessions
+            group by chain, wallet
+        ),
+        new_wallets as (
+            select first_seen_at::date as day, count(*) as total
+            from first_seen
+            group by 1
+        ),
+        uploads as (
+            select
+                created_at::date as day,
+                count(*) filter (where parent_id is null and is_deleted = false) as uploads,
+                count(*) filter (where parent_id is not null and is_deleted = false) as versions
+            from documents
+            group by 1
+        ),
+        shares as (
+            select created_at::date as day, count(*) as total
+            from document_shares
+            group by 1
+        ),
+        signs as (
+            select created_at::date as day, count(*) as total
+            from document_events
+            where event_type in ('SIGN', 'ENVELOPE_COMPLETED', 'AGENT_SIGN')
+            group by 1
+        ),
+        agents as (
+            select created_at::date as day, count(*) as total
+            from agent_identities
+            group by 1
+        ),
+        active_wallets as (
+            select occurred_at::date as day, count(distinct chain || ':' || wallet) as total
+            from growth_events
+            where wallet is not null
+            group by 1
+        )
+        select
+            days.day,
+            coalesce(new_wallets.total, 0) as new_wallets,
+            coalesce(active_wallets.total, 0) as active_wallets,
+            coalesce(uploads.uploads, 0) as uploads,
+            coalesce(uploads.versions, 0) as versions,
+            coalesce(shares.total, 0) as shares,
+            coalesce(signs.total, 0) as signs,
+            coalesce(agents.total, 0) as agents
+        from days
+        left join new_wallets on new_wallets.day = days.day
+        left join active_wallets on active_wallets.day = days.day
+        left join uploads on uploads.day = days.day
+        left join shares on shares.day = days.day
+        left join signs on signs.day = days.day
+        left join agents on agents.day = days.day
+        order by days.day asc
+        "#,
+    )
+    .bind(days_i32)
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let tracking = sqlx::query(
+        "select min(occurred_at) as started_at, count(*) as total_events from growth_events",
+    )
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let billing = sqlx::query(
+        r#"
+        with connected_wallets as (
+            select count(distinct chain || ':' || wallet) as total_connected_wallets
+            from wallet_sessions
+        ),
+        subs as (
+            select
+                wallet,
+                billing_status,
+                trial_ends_at,
+                paid_through,
+                stripe_customer_id,
+                stripe_subscription_id,
+                case
+                    when billing_status = 'trialing' and trial_ends_at > now() then 'trialing'
+                    when billing_status in ('active', 'paid') and coalesce(paid_through > now(), true) then 'paid_active'
+                    when billing_status = 'trialing' and trial_ends_at <= now() then 'trial_expired'
+                    when billing_status in ('canceled', 'cancelled') then 'canceled'
+                    when billing_status in ('past_due', 'unpaid') then 'past_due'
+                    else billing_status
+                end as normalized_status
+            from account_subscriptions
+        )
+        select
+            (select total_connected_wallets from connected_wallets) as connected_wallets,
+            count(*) as subscription_rows,
+            count(*) filter (where normalized_status = 'trialing') as trialing_accounts,
+            count(*) filter (where normalized_status = 'paid_active') as paid_accounts,
+            count(*) filter (where normalized_status = 'trial_expired') as expired_trials,
+            count(*) filter (where normalized_status in ('canceled', 'past_due', 'unpaid')) as churned_accounts,
+            count(*) filter (where stripe_customer_id is not null) as stripe_customers,
+            count(*) filter (where stripe_subscription_id is not null) as stripe_subscriptions,
+            count(*) filter (where paid_through is not null) as accounts_with_paid_through
+        from subs
+        "#,
+    )
+    .fetch_one(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let billing_status_rows = sqlx::query(
+        r#"
+        with subs as (
+            select
+                case
+                    when billing_status = 'trialing' and trial_ends_at > now() then 'trialing'
+                    when billing_status in ('active', 'paid') and coalesce(paid_through > now(), true) then 'paid_active'
+                    when billing_status = 'trialing' and trial_ends_at <= now() then 'trial_expired'
+                    when billing_status in ('canceled', 'cancelled') then 'canceled'
+                    when billing_status in ('past_due', 'unpaid') then 'past_due'
+                    else billing_status
+                end as normalized_status
+            from account_subscriptions
+        )
+        select normalized_status as status, count(*) as total
+        from subs
+        group by 1
+        order by total desc, status asc
+        "#,
+    )
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let recent_events = sqlx::query(
+        r#"
+        select
+            occurred_at,
+            event_type,
+            actor_kind,
+            wallet,
+            chain,
+            session_id,
+            doc_id,
+            envelope_id,
+            agent_id,
+            properties_json
+        from growth_events
+        order by occurred_at desc
+        limit 40
+        "#,
+    )
+    .fetch_all(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(Json(json!({
+        "generated_at": chrono::Utc::now(),
+        "window_days": days,
+        "console_path": st.admin_console_path,
+        "admin_wallet": session.wallet,
+        "admin_chain": session.chain,
+        "tracking": {
+            "started_at": tracking.get::<Option<chrono::DateTime<chrono::Utc>>, _>("started_at"),
+            "total_events": tracking.get::<i64, _>("total_events")
+        },
+        "kpis": {
+            "total_wallets": kpis.get::<i64, _>("total_wallets"),
+            "new_wallets_1d": kpis.get::<i64, _>("new_wallets_1d"),
+            "new_wallets_7d": kpis.get::<i64, _>("new_wallets_7d"),
+            "new_wallets_30d": kpis.get::<i64, _>("new_wallets_30d"),
+            "active_wallets_1d": kpis.get::<i64, _>("active_wallets_1d"),
+            "active_wallets_7d": kpis.get::<i64, _>("active_wallets_7d"),
+            "active_wallets_30d": kpis.get::<i64, _>("active_wallets_30d"),
+            "wallet_logins_30d": kpis.get::<i64, _>("wallet_logins_30d"),
+            "active_sessions_now": kpis.get::<i64, _>("active_sessions_now"),
+            "active_devices_30d": kpis.get::<i64, _>("active_devices_30d"),
+            "total_docs": kpis.get::<i64, _>("total_docs"),
+            "total_versions": kpis.get::<i64, _>("total_versions"),
+            "total_shares": kpis.get::<i64, _>("total_shares"),
+            "total_sign_events": kpis.get::<i64, _>("total_sign_events"),
+            "total_agents": kpis.get::<i64, _>("total_agents")
+        },
+        "usage_window": {
+            "uploads": usage.get::<i64, _>("uploads_window"),
+            "versions": usage.get::<i64, _>("versions_window"),
+            "shares": usage.get::<i64, _>("shares_window"),
+            "signs": usage.get::<i64, _>("signs_window"),
+            "views": usage.get::<i64, _>("views_window"),
+            "downloads": usage.get::<i64, _>("downloads_window"),
+            "inbox_actions": usage.get::<i64, _>("inbox_actions_window"),
+            "public_opens": usage.get::<i64, _>("public_opens_window"),
+            "public_completions": usage.get::<i64, _>("public_completions_window"),
+            "agents_registered": usage.get::<i64, _>("agents_window")
+        },
+        "funnel": {
+            "connected_wallets": funnel.get::<i64, _>("connected_wallets"),
+            "wallets_uploaded": funnel.get::<i64, _>("wallets_uploaded"),
+            "wallets_shared": funnel.get::<i64, _>("wallets_shared"),
+            "wallets_signed": funnel.get::<i64, _>("wallets_signed"),
+            "wallets_received": funnel.get::<i64, _>("wallets_received"),
+            "wallets_with_agents": funnel.get::<i64, _>("wallets_with_agents")
+        },
+        "anonymous_acquisition": {
+            "page_views": acquisition.get::<i64, _>("page_views_window"),
+            "unique_visitors": acquisition.get::<i64, _>("unique_visitors_window"),
+            "converted_visitors": acquisition.get::<i64, _>("converted_visitors_window"),
+            "anonymous_visitors": acquisition.get::<i64, _>("anonymous_visitors_window"),
+            "sources": acquisition_source_rows.into_iter().map(|row| json!({
+                "source": row.get::<String, _>("source"),
+                "medium": row.get::<String, _>("medium"),
+                "campaign": row.get::<String, _>("campaign"),
+                "visitors": row.get::<i64, _>("visitors"),
+                "converted": row.get::<i64, _>("converted")
+            })).collect::<Vec<_>>(),
+            "referrers": acquisition_referrer_rows.into_iter().map(|row| json!({
+                "referrer_host": row.get::<String, _>("referrer_host"),
+                "visitors": row.get::<i64, _>("visitors"),
+                "converted": row.get::<i64, _>("converted")
+            })).collect::<Vec<_>>()
+        },
+        "retention": {
+            "summary": {
+                "eligible_1d": retention_summary.get::<i64, _>("eligible_1d"),
+                "retained_1d": retention_summary.get::<i64, _>("retained_1d"),
+                "eligible_7d": retention_summary.get::<i64, _>("eligible_7d"),
+                "retained_7d": retention_summary.get::<i64, _>("retained_7d"),
+                "eligible_30d": retention_summary.get::<i64, _>("eligible_30d"),
+                "retained_30d": retention_summary.get::<i64, _>("retained_30d")
+            },
+            "cohorts": retention_rows.into_iter().map(|row| json!({
+                "cohort_day": row.get::<chrono::NaiveDate, _>("cohort_day").to_string(),
+                "cohort_size": row.get::<i64, _>("cohort_size"),
+                "eligible_1d": row.get::<i64, _>("eligible_1d"),
+                "retained_1d": row.get::<i64, _>("retained_1d"),
+                "eligible_7d": row.get::<i64, _>("eligible_7d"),
+                "retained_7d": row.get::<i64, _>("retained_7d"),
+                "eligible_30d": row.get::<i64, _>("eligible_30d"),
+                "retained_30d": row.get::<i64, _>("retained_30d")
+            })).collect::<Vec<_>>()
+        },
+        "share_conversion": {
+            "shares_sent": share_conversion.get::<i64, _>("shares_sent"),
+            "shares_opened": share_conversion.get::<i64, _>("shares_opened"),
+            "shares_downloaded": share_conversion.get::<i64, _>("shares_downloaded"),
+            "shares_completed": share_conversion.get::<i64, _>("shares_completed")
+        },
+        "share_channels": share_channel_rows.into_iter().map(|row| json!({
+            "channel": row.get::<String, _>("channel"),
+            "share_touches": row.get::<i64, _>("share_touches"),
+            "opened": row.get::<i64, _>("opened"),
+            "downloaded": row.get::<i64, _>("downloaded"),
+            "completed": row.get::<i64, _>("completed"),
+            "delivered": row.get::<i64, _>("delivered"),
+            "inbox_available": row.get::<i64, _>("inbox_available"),
+            "delivery_issues": row.get::<i64, _>("delivery_issues")
+        })).collect::<Vec<_>>(),
+        "billing_conversion": {
+            "connected_wallets": billing.get::<i64, _>("connected_wallets"),
+            "subscription_rows": billing.get::<i64, _>("subscription_rows"),
+            "trialing_accounts": billing.get::<i64, _>("trialing_accounts"),
+            "paid_accounts": billing.get::<i64, _>("paid_accounts"),
+            "expired_trials": billing.get::<i64, _>("expired_trials"),
+            "churned_accounts": billing.get::<i64, _>("churned_accounts"),
+            "stripe_customers": billing.get::<i64, _>("stripe_customers"),
+            "stripe_subscriptions": billing.get::<i64, _>("stripe_subscriptions"),
+            "accounts_with_paid_through": billing.get::<i64, _>("accounts_with_paid_through"),
+            "statuses": billing_status_rows.into_iter().map(|row| json!({
+                "status": row.get::<String, _>("status"),
+                "total": row.get::<i64, _>("total")
+            })).collect::<Vec<_>>()
+        },
+        "chain_breakdown": chain_breakdown_rows.into_iter().map(|row| json!({
+            "chain": row.get::<String, _>("chain"),
+            "total_wallets": row.get::<i64, _>("total_wallets"),
+            "new_wallets_30d": row.get::<i64, _>("new_wallets_30d"),
+            "active_wallets_30d": row.get::<i64, _>("active_wallets_30d"),
+            "docs_owned": row.get::<i64, _>("docs_owned"),
+            "shares_sent": row.get::<i64, _>("shares_sent")
+        })).collect::<Vec<_>>(),
+        "wallet_activity": wallet_activity_rows.into_iter().map(|row| json!({
+            "chain": row.get::<String, _>("chain"),
+            "wallet": row.get::<String, _>("wallet"),
+            "first_seen_at": row.get::<chrono::DateTime<chrono::Utc>, _>("first_seen_at"),
+            "last_seen_at": row.get::<chrono::DateTime<chrono::Utc>, _>("last_seen_at"),
+            "login_count": row.get::<i64, _>("login_count"),
+            "docs_owned": row.get::<i64, _>("docs_owned"),
+            "shares_sent": row.get::<i64, _>("shares_sent"),
+            "sign_count": row.get::<i64, _>("sign_count"),
+            "agent_count": row.get::<i64, _>("agent_count"),
+            "score": row.get::<i64, _>("score")
+        })).collect::<Vec<_>>(),
+        "daily": daily_rows.into_iter().map(|row| json!({
+            "day": row.get::<chrono::NaiveDate, _>("day").to_string(),
+            "new_wallets": row.get::<i64, _>("new_wallets"),
+            "active_wallets": row.get::<i64, _>("active_wallets"),
+            "uploads": row.get::<i64, _>("uploads"),
+            "versions": row.get::<i64, _>("versions"),
+            "shares": row.get::<i64, _>("shares"),
+            "signs": row.get::<i64, _>("signs"),
+            "agents": row.get::<i64, _>("agents")
+        })).collect::<Vec<_>>(),
+        "recent_events": recent_events.into_iter().map(|row| json!({
+            "occurred_at": row.get::<chrono::DateTime<chrono::Utc>, _>("occurred_at"),
+            "event_type": row.get::<String, _>("event_type"),
+            "actor_kind": row.get::<String, _>("actor_kind"),
+            "wallet": row.get::<Option<String>, _>("wallet"),
+            "chain": row.get::<Option<String>, _>("chain"),
+            "session_id": row.get::<Option<String>, _>("session_id"),
+            "doc_id": row.get::<Option<uuid::Uuid>, _>("doc_id"),
+            "envelope_id": row.get::<Option<uuid::Uuid>, _>("envelope_id"),
+            "agent_id": row.get::<Option<uuid::Uuid>, _>("agent_id"),
+            "properties": row.get::<serde_json::Value, _>("properties_json")
+        })).collect::<Vec<_>>()
+    })))
+}
+
+#[derive(Deserialize)]
+struct AnalyticsTrackRequest {
+    event_type: Option<String>,
+    visitor_id: Option<String>,
+    page_path: Option<String>,
+    page_title: Option<String>,
+    referrer: Option<String>,
+    referrer_host: Option<String>,
+    attribution: Option<serde_json::Value>,
+}
+
+async fn analytics_track_handler(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AnalyticsTrackRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let event_type = sanitize_tracking_text(body.event_type.as_deref(), 64)
+        .unwrap_or_else(|| "PAGE_VIEW".to_string())
+        .to_ascii_uppercase();
+    let visitor_id = body
+        .visitor_id
+        .as_deref()
+        .and_then(|value| sanitize_tracking_text(Some(value), 160))
+        .or_else(|| visitor_id_from_headers(&headers));
+    let properties = merge_tracking_properties(
+        serde_json::Map::from_iter([
+            (
+                "page_path".into(),
+                json!(sanitize_tracking_text(body.page_path.as_deref(), 512)),
+            ),
+            (
+                "page_title".into(),
+                json!(sanitize_tracking_text(body.page_title.as_deref(), 256)),
+            ),
+            (
+                "referrer".into(),
+                json!(sanitize_tracking_text(body.referrer.as_deref(), 1024)),
+            ),
+            (
+                "referrer_host".into(),
+                json!(sanitize_tracking_text(body.referrer_host.as_deref(), 256)),
+            ),
+        ]),
+        visitor_id.as_deref(),
+        body.attribution.as_ref(),
+    );
+
+    record_growth_event(
+        &st.db,
+        &event_type,
+        "visitor",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        properties,
+    )
+    .await;
+
+    Ok(Json(json!({
+        "ok": true,
+        "event_type": event_type
+    })))
+}
+
 fn load_mlkem_db_master_key() -> Result<[u8; 32], AppError> {
     let raw = std::env::var("MLKEM_DB_MASTER_KEY_B64")
         .map_err(|_| AppError::Internal("Missing MLKEM_DB_MASTER_KEY_B64".into()))?;
@@ -482,7 +1742,9 @@ fn load_mlkem_db_master_key() -> Result<[u8; 32], AppError> {
         .decode(raw.trim())
         .map_err(|_| AppError::Internal("Invalid MLKEM_DB_MASTER_KEY_B64 encoding".into()))?;
     if decoded.len() != 32 {
-        return Err(AppError::Internal("MLKEM_DB_MASTER_KEY_B64 must decode to 32 bytes".into()));
+        return Err(AppError::Internal(
+            "MLKEM_DB_MASTER_KEY_B64 must decode to 32 bytes".into(),
+        ));
     }
     let mut key = [0u8; 32];
     key.copy_from_slice(&decoded);
@@ -492,7 +1754,10 @@ fn load_mlkem_db_master_key() -> Result<[u8; 32], AppError> {
 fn encrypt_mlkem_secret(sk_b64: &str) -> Result<(String, String), AppError> {
     let key = load_mlkem_db_master_key()?;
     let (nonce, ciphertext) = aes_gcm::encrypt_aes_gcm(&key, sk_b64.as_bytes())?;
-    Ok((BASE64_STANDARD.encode(ciphertext), BASE64_STANDARD.encode(nonce)))
+    Ok((
+        BASE64_STANDARD.encode(ciphertext),
+        BASE64_STANDARD.encode(nonce),
+    ))
 }
 
 fn decrypt_mlkem_secret(sk_b64_enc: &str, sk_nonce_b64: &str) -> Result<String, AppError> {
@@ -504,10 +1769,14 @@ fn decrypt_mlkem_secret(sk_b64_enc: &str, sk_nonce_b64: &str) -> Result<String, 
         .decode(sk_nonce_b64)
         .map_err(|_| AppError::Internal("Invalid ML-KEM secret nonce encoding".into()))?;
     let plaintext = aes_gcm::decrypt_aes_gcm(&key, &nonce, &ciphertext)?;
-    String::from_utf8(plaintext).map_err(|_| AppError::Internal("ML-KEM secret is not valid UTF-8".into()))
+    String::from_utf8(plaintext)
+        .map_err(|_| AppError::Internal("ML-KEM secret is not valid UTF-8".into()))
 }
 
-async fn load_server_mlkem_keypair(db: &PgPool, wallet: &str) -> Result<Option<MlKemKeypairFile>, AppError> {
+async fn load_server_mlkem_keypair(
+    db: &PgPool,
+    wallet: &str,
+) -> Result<Option<MlKemKeypairFile>, AppError> {
     let wallet = wallet.trim().to_lowercase();
     let row = sqlx::query(
         "select wallet, kem, pk_b64, sk_b64, sk_b64_enc, sk_nonce_b64 from wallet_mlkem_keys where wallet = $1",
@@ -570,7 +1839,10 @@ async fn persist_server_mlkem_keypair(
         wallet: row.get("wallet"),
         kem: row.get("kem"),
         pk_b64: row.get("pk_b64"),
-        sk_b64: decrypt_mlkem_secret(&row.get::<String, _>("sk_b64_enc"), &row.get::<String, _>("sk_nonce_b64"))?,
+        sk_b64: decrypt_mlkem_secret(
+            &row.get::<String, _>("sk_b64_enc"),
+            &row.get::<String, _>("sk_nonce_b64"),
+        )?,
     })
 }
 
@@ -623,7 +1895,12 @@ fn billing_plan_amount_usd() -> i32 {
 fn billing_enforced() -> bool {
     std::env::var("BILLING_ENFORCEMENT")
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -750,7 +2027,10 @@ fn user_agent_from_headers(headers: &HeaderMap) -> Option<String> {
     header_value(headers, "user-agent")
 }
 
-async fn require_wallet_from_headers(st: &AppState, headers: &HeaderMap) -> Result<String, AppError> {
+async fn require_wallet_from_headers(
+    st: &AppState,
+    headers: &HeaderMap,
+) -> Result<String, AppError> {
     Ok(require_session_from_headers(st, headers).await?.wallet)
 }
 
@@ -765,8 +2045,7 @@ async fn require_session_from_headers(
 
     st.auth
         .get_session(sid, device_id_from_headers(headers).as_deref())
-        .await
-        ?
+        .await?
         .ok_or_else(|| AppError::Auth("Invalid or expired session".into()))
 }
 
@@ -831,7 +2110,9 @@ async fn load_document_policy(
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(row.map(|row| row.get::<serde_json::Value, _>("policy_json")).unwrap_or_else(default_document_policy))
+    Ok(row
+        .map(|row| row.get::<serde_json::Value, _>("policy_json"))
+        .unwrap_or_else(default_document_policy))
 }
 
 async fn require_agent_from_headers(
@@ -871,7 +2152,11 @@ async fn require_agent_from_headers(
 }
 
 fn agent_allowed(policy: &serde_json::Value, key: &str, agent: &AgentIdentityRecord) -> bool {
-    if !policy.get(key).and_then(|value| value.as_bool()).unwrap_or(false) {
+    if !policy
+        .get(key)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
         return false;
     }
 
@@ -969,7 +2254,10 @@ async fn load_document_access_record(
 }
 
 fn bool_from_form_text(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn auto_anchor_enabled() -> bool {
@@ -979,7 +2267,10 @@ fn auto_anchor_enabled() -> bool {
 }
 
 fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers.get(name).and_then(|value| value.to_str().ok()).map(ToOwned::to_owned)
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned)
 }
 
 fn multipart_error(context: &str, err: impl std::fmt::Display) -> AppError {
@@ -1025,7 +2316,8 @@ async fn insert_document_event(
     .fetch_optional(db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
-    let prev_event_hash_hex = previous.and_then(|row| row.get::<Option<String>, _>("event_hash_hex"));
+    let prev_event_hash_hex =
+        previous.and_then(|row| row.get::<Option<String>, _>("event_hash_hex"));
     let created_at = chrono::Utc::now();
     let event_hash_hex = event_chain_hash_hex(
         doc_id,
@@ -1097,7 +2389,11 @@ fn agent_actor_json(agent: &AgentIdentityRecord) -> serde_json::Value {
     })
 }
 
-fn custody_payload(base: serde_json::Value, session: &WalletSession, headers: &HeaderMap) -> serde_json::Value {
+fn custody_payload(
+    base: serde_json::Value,
+    session: &WalletSession,
+    headers: &HeaderMap,
+) -> serde_json::Value {
     let mut payload = match base {
         serde_json::Value::Object(map) => map,
         other => {
@@ -1110,11 +2406,20 @@ fn custody_payload(base: serde_json::Value, session: &WalletSession, headers: &H
     payload.insert("recorded_at".into(), json!(chrono::Utc::now()));
     payload.insert("actor".into(), session_actor_json(session));
     payload.insert("actor_chain".into(), json!(session.chain));
-    payload.insert("user_agent".into(), json!(header_value(headers, "user-agent")));
+    payload.insert(
+        "user_agent".into(),
+        json!(header_value(headers, "user-agent")),
+    );
     payload.insert("origin".into(), json!(header_value(headers, "origin")));
     payload.insert("referer".into(), json!(header_value(headers, "referer")));
-    payload.insert("x_forwarded_for".into(), json!(header_value(headers, "x-forwarded-for")));
-    payload.insert("x_real_ip".into(), json!(header_value(headers, "x-real-ip")));
+    payload.insert(
+        "x_forwarded_for".into(),
+        json!(header_value(headers, "x-forwarded-for")),
+    );
+    payload.insert(
+        "x_real_ip".into(),
+        json!(header_value(headers, "x-real-ip")),
+    );
 
     serde_json::Value::Object(payload)
 }
@@ -1132,11 +2437,20 @@ fn public_custody_payload(base: serde_json::Value, headers: &HeaderMap) -> serde
     payload.insert("recorded_at".into(), json!(chrono::Utc::now()));
     payload.insert("actor".into(), public_actor_json(uuid::Uuid::nil()));
     payload.insert("actor_chain".into(), json!("public-envelope"));
-    payload.insert("user_agent".into(), json!(header_value(headers, "user-agent")));
+    payload.insert(
+        "user_agent".into(),
+        json!(header_value(headers, "user-agent")),
+    );
     payload.insert("origin".into(), json!(header_value(headers, "origin")));
     payload.insert("referer".into(), json!(header_value(headers, "referer")));
-    payload.insert("x_forwarded_for".into(), json!(header_value(headers, "x-forwarded-for")));
-    payload.insert("x_real_ip".into(), json!(header_value(headers, "x-real-ip")));
+    payload.insert(
+        "x_forwarded_for".into(),
+        json!(header_value(headers, "x-forwarded-for")),
+    );
+    payload.insert(
+        "x_real_ip".into(),
+        json!(header_value(headers, "x-real-ip")),
+    );
 
     serde_json::Value::Object(payload)
 }
@@ -1171,11 +2485,20 @@ fn agent_custody_payload(
     payload.insert("recorded_at".into(), json!(chrono::Utc::now()));
     payload.insert("actor".into(), agent_actor_json(agent));
     payload.insert("actor_chain".into(), json!("agent-api"));
-    payload.insert("user_agent".into(), json!(header_value(headers, "user-agent")));
+    payload.insert(
+        "user_agent".into(),
+        json!(header_value(headers, "user-agent")),
+    );
     payload.insert("origin".into(), json!(header_value(headers, "origin")));
     payload.insert("referer".into(), json!(header_value(headers, "referer")));
-    payload.insert("x_forwarded_for".into(), json!(header_value(headers, "x-forwarded-for")));
-    payload.insert("x_real_ip".into(), json!(header_value(headers, "x-real-ip")));
+    payload.insert(
+        "x_forwarded_for".into(),
+        json!(header_value(headers, "x-forwarded-for")),
+    );
+    payload.insert(
+        "x_real_ip".into(),
+        json!(header_value(headers, "x-real-ip")),
+    );
 
     serde_json::Value::Object(payload)
 }
@@ -1325,7 +2648,9 @@ fn default_share_expiry_hours() -> i64 {
 }
 
 fn clamp_share_expiry_hours(hours: Option<i64>) -> i64 {
-    hours.unwrap_or_else(default_share_expiry_hours).clamp(1, 24 * 30)
+    hours
+        .unwrap_or_else(default_share_expiry_hours)
+        .clamp(1, 24 * 30)
 }
 
 fn public_guest_attestation_enabled() -> bool {
@@ -1345,14 +2670,22 @@ fn redact_token(token: Option<&str>) -> Option<String> {
     })
 }
 
-fn normalize_annotation_fields(fields: Option<Vec<SignerAnnotationField>>) -> Vec<SignerAnnotationField> {
+fn normalize_annotation_fields(
+    fields: Option<Vec<SignerAnnotationField>>,
+) -> Vec<SignerAnnotationField> {
     fields
         .unwrap_or_default()
         .into_iter()
         .map(|field| SignerAnnotationField {
             kind: field.kind.trim().to_string(),
-            label: field.label.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
-            value: field.value.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()),
+            label: field
+                .label
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            value: field
+                .value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             x_pct: field.x_pct.clamp(0.0, 100.0),
             y_pct: field.y_pct.clamp(0.0, 100.0),
         })
@@ -1362,7 +2695,9 @@ fn normalize_annotation_fields(fields: Option<Vec<SignerAnnotationField>>) -> Ve
 
 fn invite_email_subject(label: Option<&str>) -> String {
     match label {
-        Some(value) if !value.trim().is_empty() => format!("Signature request for {}", value.trim()),
+        Some(value) if !value.trim().is_empty() => {
+            format!("Signature request for {}", value.trim())
+        }
         _ => "Signature request from TIDBIT-share-WEAVE".to_string(),
     }
 }
@@ -1408,8 +2743,22 @@ async fn dispatch_share_deliveries(
     signing_url: &str,
 ) -> (Vec<DeliveryOutcome>, Vec<String>) {
     let subject = invite_email_subject(label);
-    let text_body = invite_message_text(label, doc_id, hash_hex, envelope_id, recipient_name, signing_url);
-    let html_body = invite_message_html(label, doc_id, hash_hex, envelope_id, recipient_name, signing_url);
+    let text_body = invite_message_text(
+        label,
+        doc_id,
+        hash_hex,
+        envelope_id,
+        recipient_name,
+        signing_url,
+    );
+    let html_body = invite_message_html(
+        label,
+        doc_id,
+        hash_hex,
+        envelope_id,
+        recipient_name,
+        signing_url,
+    );
     let mut outcomes = Vec::new();
     let mut errors = Vec::new();
 
@@ -1441,7 +2790,9 @@ fn derive_share_status(
     if has_wallet_route {
         if has_provider_request
             && (delivery_errors.iter().next().is_some()
-                || deliveries.iter().any(|outcome| outcome.status != "sent" && outcome.channel != "wallet"))
+                || deliveries
+                    .iter()
+                    .any(|outcome| outcome.status != "sent" && outcome.channel != "wallet"))
         {
             "wallet_shared_with_delivery_issues"
         } else {
@@ -1459,7 +2810,12 @@ fn derive_share_status(
 fn active_inbox_status(status: &str) -> bool {
     matches!(
         status,
-        "wallet_shared" | "wallet_shared_with_delivery_issues" | "sent" | "created" | "delivery_issue" | "opened"
+        "wallet_shared"
+            | "wallet_shared_with_delivery_issues"
+            | "sent"
+            | "created"
+            | "delivery_issue"
+            | "opened"
     )
 }
 
@@ -1493,8 +2849,15 @@ async fn create_document_record(
 
     let id = uuid::Uuid::new_v4();
     let version = parent_version.map(|value| value + 1).unwrap_or(1);
-    let (stored_bytes, ciphertext_hash_hex) =
-        build_document_envelope(&st.db, owner_wallet, id, label.as_deref(), &mime_type, bytes).await?;
+    let (stored_bytes, ciphertext_hash_hex) = build_document_envelope(
+        &st.db,
+        owner_wallet,
+        id,
+        label.as_deref(),
+        &mime_type,
+        bytes,
+    )
+    .await?;
     let storage_path = st
         .storage
         .upload_bytes(
@@ -1615,7 +2978,35 @@ async fn evm_verify_handler_app(
         )
         .await?;
 
+    ensure_account_subscription_record(&st.db, &address).await?;
     let keys = load_or_create_server_mlkem_keypair(&st.db, &address).await?;
+    let visitor_id = body
+        .visitor_id
+        .as_deref()
+        .and_then(|value| sanitize_tracking_text(Some(value), 160))
+        .or_else(|| visitor_id_from_headers(&headers));
+    record_growth_event(
+        &st.db,
+        "WALLET_LOGIN",
+        "wallet",
+        Some(&address),
+        Some("evm"),
+        Some(&session.session_id),
+        None,
+        None,
+        None,
+        merge_tracking_properties(
+            serde_json::Map::from_iter([
+                ("device_id".into(), json!(session.device_id)),
+                ("user_agent".into(), json!(session.user_agent)),
+                ("ip_address".into(), json!(ip_from_headers(&headers))),
+                ("login_method".into(), json!("evm")),
+            ]),
+            visitor_id.as_deref(),
+            body.attribution.as_ref(),
+        ),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -1677,7 +3068,35 @@ async fn sol_verify_handler_app(
         )
         .await?;
 
+    ensure_account_subscription_record(&st.db, address).await?;
     let keys = load_or_create_server_mlkem_keypair(&st.db, address).await?;
+    let visitor_id = body
+        .visitor_id
+        .as_deref()
+        .and_then(|value| sanitize_tracking_text(Some(value), 160))
+        .or_else(|| visitor_id_from_headers(&headers));
+    record_growth_event(
+        &st.db,
+        "WALLET_LOGIN",
+        "wallet",
+        Some(address),
+        Some("sol"),
+        Some(&session.session_id),
+        None,
+        None,
+        None,
+        merge_tracking_properties(
+            serde_json::Map::from_iter([
+                ("device_id".into(), json!(session.device_id)),
+                ("user_agent".into(), json!(session.user_agent)),
+                ("ip_address".into(), json!(ip_from_headers(&headers))),
+                ("login_method".into(), json!("sol")),
+            ]),
+            visitor_id.as_deref(),
+            body.attribution.as_ref(),
+        ),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -1701,7 +3120,8 @@ async fn list_docs_handler(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
     );
-    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+    let chain =
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let rows = sqlx::query(
         r#"
@@ -1853,7 +3273,8 @@ async fn list_shared_activity_handler(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
     );
-    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+    let chain =
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let rows = sqlx::query(
         r#"
@@ -1929,7 +3350,8 @@ async fn overview_handler(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
     );
-    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+    let chain =
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let counts = sqlx::query(
         r#"
@@ -2236,7 +3658,10 @@ async fn export_doc_evidence_handler(
                 .as_deref()
                 .map(|value| value == computed_event_hash)
                 .unwrap_or(false);
-            let event_hmac_valid = match (&stored_event_hmac, sign_hmac_b64(computed_event_hash.as_bytes())) {
+            let event_hmac_valid = match (
+                &stored_event_hmac,
+                sign_hmac_b64(computed_event_hash.as_bytes()),
+            ) {
                 (Some(stored), Some(expected)) => {
                     event_hmac_covered += 1;
                     Some(stored == &expected)
@@ -2245,10 +3670,13 @@ async fn export_doc_evidence_handler(
                 (None, _) => None,
             };
 
-            if stored_event_hash.is_none() || stored_prev_event_hash.is_none() && previous_event_hash.is_some() {
+            if stored_event_hash.is_none()
+                || stored_prev_event_hash.is_none() && previous_event_hash.is_some()
+            {
                 event_chain_complete = false;
             }
-            if !prev_hash_matches || !event_hash_matches || matches!(event_hmac_valid, Some(false)) {
+            if !prev_hash_matches || !event_hash_matches || matches!(event_hmac_valid, Some(false))
+            {
                 event_chain_valid = false;
             }
 
@@ -2374,10 +3802,13 @@ async fn anchor_evidence_bundle_handler(
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&wallet) {
-        return Err(AppError::Forbidden("Only the owner can anchor evidence bundles".into()));
+        return Err(AppError::Forbidden(
+            "Only the owner can anchor evidence bundles".into(),
+        ));
     }
 
-    let evidence = export_doc_evidence_handler(State(st.clone()), headers.clone(), Path(id)).await?;
+    let evidence =
+        export_doc_evidence_handler(State(st.clone()), headers.clone(), Path(id)).await?;
     let evidence_json = evidence.0;
     let evidence_bytes =
         serde_json::to_vec(&evidence_json).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -2430,7 +3861,9 @@ async fn get_document_policy_handler(
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&wallet) {
-        return Err(AppError::Forbidden("Only the owner can view document policy".into()));
+        return Err(AppError::Forbidden(
+            "Only the owner can view document policy".into(),
+        ));
     }
 
     let policy = load_document_policy(&st.db, id, &wallet).await?;
@@ -2452,7 +3885,9 @@ async fn set_document_policy_handler(
     let doc = load_document_access_record(&st.db, id, &wallet, &session.chain).await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&wallet) {
-        return Err(AppError::Forbidden("Only the owner can update document policy".into()));
+        return Err(AppError::Forbidden(
+            "Only the owner can update document policy".into(),
+        ));
     }
 
     sqlx::query(
@@ -2524,10 +3959,29 @@ async fn register_agent_handler(
     .fetch_one(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    let agent_id = row.get::<uuid::Uuid, _>("id");
+    record_growth_event(
+        &st.db,
+        "AGENT_REGISTERED",
+        "wallet",
+        Some(&wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        None,
+        None,
+        Some(agent_id),
+        json!({
+            "label": body.label.trim(),
+            "provider": body.provider.clone(),
+            "model": body.model.clone(),
+            "capabilities": capabilities.clone()
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
-        "agent_id": row.get::<uuid::Uuid,_>("id"),
+        "agent_id": agent_id,
         "owner_wallet": wallet,
         "token": token,
         "label": body.label.trim(),
@@ -2667,12 +4121,16 @@ async fn agent_review_doc_handler(
     .await?;
 
     if !doc.owner_wallet.eq_ignore_ascii_case(&agent.owner_wallet) {
-        return Err(AppError::Forbidden("Agent may only review owner-controlled documents".into()));
+        return Err(AppError::Forbidden(
+            "Agent may only review owner-controlled documents".into(),
+        ));
     }
 
     let policy = load_document_policy(&st.db, id, &doc.owner_wallet).await?;
     if !agent_allowed(&policy, "allow_agent_review", &agent) {
-        return Err(AppError::Forbidden("Agent review is blocked by document policy".into()));
+        return Err(AppError::Forbidden(
+            "Agent review is blocked by document policy".into(),
+        ));
     }
 
     sqlx::query(
@@ -2725,7 +4183,9 @@ async fn agent_sign_doc_handler(
     let policy = load_document_policy(&st.db, id, &doc.owner_wallet).await?;
 
     if !agent_allowed(&policy, "allow_agent_sign", &agent) {
-        return Err(AppError::Forbidden("Agent signing is blocked by document policy".into()));
+        return Err(AppError::Forbidden(
+            "Agent signing is blocked by document policy".into(),
+        ));
     }
 
     let require_human_countersign = policy
@@ -2784,7 +4244,9 @@ async fn agent_version_doc_handler(
     let policy = load_document_policy(&st.db, parent_doc_id, &parent.owner_wallet).await?;
 
     if !agent_allowed(&policy, "allow_agent_review", &agent) {
-        return Err(AppError::Forbidden("Agent version creation is blocked by document policy".into()));
+        return Err(AppError::Forbidden(
+            "Agent version creation is blocked by document policy".into(),
+        ));
     }
 
     let bytes = base64::engine::general_purpose::STANDARD
@@ -2795,8 +4257,13 @@ async fn agent_version_doc_handler(
         &st,
         &agent.owner_wallet,
         &bytes,
-        body.label.clone().filter(|value| !value.trim().is_empty()).or(parent.label.clone()),
-        body.mime_type.clone().unwrap_or_else(|| parent.mime_type.clone()),
+        body.label
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .or(parent.label.clone()),
+        body.mime_type
+            .clone()
+            .unwrap_or_else(|| parent.mime_type.clone()),
         Some(parent_doc_id),
         Some(parent.version),
         body.anchor_to_arweave.unwrap_or_else(auto_anchor_enabled),
@@ -2933,6 +4400,26 @@ async fn upload_doc_handler(
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    record_growth_event(
+        &st.db,
+        "DOC_UPLOADED",
+        "wallet",
+        Some(&wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(record.id),
+        None,
+        None,
+        json!({
+            "version": record.version,
+            "mime_type": record.mime_type.clone(),
+            "label": record.label.clone(),
+            "parent_id": record.parent_id,
+            "arweave_tx": record.arweave_tx.clone(),
+            "anchor_to_arweave": anchor_to_arweave
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -2950,10 +4437,13 @@ async fn create_document_version_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
-    let parent = load_document_access_record(&st.db, parent_doc_id, &wallet, &session.chain).await?;
+    let parent =
+        load_document_access_record(&st.db, parent_doc_id, &wallet, &session.chain).await?;
 
     if !parent.owner_wallet.eq_ignore_ascii_case(&wallet) {
-        return Err(AppError::Forbidden("Only the document owner can create a new version".into()));
+        return Err(AppError::Forbidden(
+            "Only the document owner can create a new version".into(),
+        ));
     }
 
     let mut file_bytes = None;
@@ -3026,7 +4516,8 @@ async fn create_document_version_handler(
         }
     }
 
-    let bytes = file_bytes.ok_or_else(|| AppError::BadRequest("No version file uploaded".into()))?;
+    let bytes =
+        file_bytes.ok_or_else(|| AppError::BadRequest("No version file uploaded".into()))?;
     let mime_type = mime_type.unwrap_or_else(|| parent.mime_type.clone());
     let label = label
         .map(|value| value.trim().to_string())
@@ -3063,8 +4554,8 @@ async fn create_document_version_handler(
             "parent_version": parent.version,
             "arweave_tx": record.arweave_tx,
             "encryption_mode": "pq_envelope_server_managed",
-            "change_summary": change_summary,
             "editor_mode": editor_mode,
+            "change_summary": change_summary,
             "before_snapshot_hash_hex": before_hash_hex
         }),
         &session,
@@ -3073,6 +4564,28 @@ async fn create_document_version_handler(
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    record_growth_event(
+        &st.db,
+        "DOC_VERSION_CREATED",
+        "wallet",
+        Some(&wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(record.id),
+        None,
+        None,
+        json!({
+            "version": record.version,
+            "parent_id": parent_doc_id,
+            "parent_version": parent.version,
+            "mime_type": record.mime_type.clone(),
+            "arweave_tx": record.arweave_tx.clone(),
+            "anchor_to_arweave": anchor_to_arweave,
+            "editor_mode": editor_mode,
+            "change_summary": change_summary
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -3113,6 +4626,23 @@ async fn review_doc_handler(
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    record_growth_event(
+        &st.db,
+        "DOC_VIEWED",
+        "wallet",
+        Some(&wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(id),
+        None,
+        None,
+        json!({
+            "owner_wallet": doc.owner_wallet.clone(),
+            "version": doc.version,
+            "mime_type": doc.mime_type.clone()
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "url": internal_blob_url(id),
@@ -3139,7 +4669,9 @@ async fn doc_blob_handler(
     let session = require_session_from_headers(&st, &headers).await?;
     let access = load_document_access_record(&st.db, id, &session.wallet, &session.chain).await?;
     let doc = load_document_bytes_for_access(&st, &access).await?;
-    let disposition = params.get("download").map(|value| value == "1" || value == "true");
+    let disposition = params
+        .get("download")
+        .map(|value| value == "1" || value == "true");
     let filename = doc
         .label
         .clone()
@@ -3156,7 +4688,10 @@ async fn doc_blob_handler(
         [
             (header::CONTENT_TYPE, doc.mime_type),
             (header::CONTENT_DISPOSITION, content_disposition),
-            (header::HeaderName::from_static("x-tidbit-hash"), doc.hash_hex),
+            (
+                header::HeaderName::from_static("x-tidbit-hash"),
+                doc.hash_hex,
+            ),
             (
                 header::HeaderName::from_static("x-tidbit-version"),
                 doc.version.to_string(),
@@ -3205,6 +4740,23 @@ async fn download_doc_handler(
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    record_growth_event(
+        &st.db,
+        "DOC_DOWNLOADED",
+        "wallet",
+        Some(&wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(id),
+        None,
+        None,
+        json!({
+            "owner_wallet": doc.owner_wallet.clone(),
+            "version": doc.version,
+            "mime_type": doc.mime_type.clone()
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "url": format!("{}?download=1", internal_blob_url(id)),
@@ -3227,7 +4779,9 @@ async fn sign_doc_handler(
     let wallet = session.wallet.clone();
     let doc = load_document_access_record(&st.db, doc_id, &wallet, &session.chain)
         .await
-        .map_err(|_| AppError::Forbidden("You do not have signing access to this document".into()))?;
+        .map_err(|_| {
+            AppError::Forbidden("You do not have signing access to this document".into())
+        })?;
 
     if body.signature.trim().is_empty() {
         return Err(AppError::BadRequest("Missing signature".into()));
@@ -3246,7 +4800,9 @@ async fn sign_doc_handler(
                 .to_lowercase();
 
             if recovered != wallet.to_lowercase() {
-                return Err(AppError::Forbidden("Signature does not match the active wallet".into()));
+                return Err(AppError::Forbidden(
+                    "Signature does not match the active wallet".into(),
+                ));
             }
 
             json!({
@@ -3274,11 +4830,14 @@ async fn sign_doc_handler(
             let signed_message = base64::engine::general_purpose::STANDARD
                 .decode(&body.signature)
                 .map_err(|_| AppError::BadRequest("Invalid PQ signed message encoding".into()))?;
-            let verified = dilithium::verify(&public_key, canonical_message.as_bytes(), &signed_message)
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let verified =
+                dilithium::verify(&public_key, canonical_message.as_bytes(), &signed_message)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
 
             if !verified {
-                return Err(AppError::Forbidden("PQ signature verification failed".into()));
+                return Err(AppError::Forbidden(
+                    "PQ signature verification failed".into(),
+                ));
             }
 
             json!({
@@ -3313,6 +4872,24 @@ async fn sign_doc_handler(
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    record_growth_event(
+        &st.db,
+        "DOC_SIGNED",
+        "wallet",
+        Some(&wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(doc_id),
+        None,
+        None,
+        json!({
+            "version": doc.version,
+            "mime_type": doc.mime_type,
+            "signature_type": signature_type,
+            "verification": verification_payload
+        }),
+    )
+    .await;
 
     Ok(Json(json!({ "ok": true })))
 }
@@ -3329,12 +4906,13 @@ async fn delete_doc_handler(
     let session = require_session_from_headers(&st, &headers).await?;
     let wallet = session.wallet.clone();
 
-    let result = sqlx::query("update documents set is_deleted = true where id = $1 and owner_wallet = $2")
-        .bind(id)
-        .bind(&wallet)
-        .execute(&st.db)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let result =
+        sqlx::query("update documents set is_deleted = true where id = $1 and owner_wallet = $2")
+            .bind(id)
+            .bind(&wallet)
+            .execute(&st.db)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound("Document not found".into()));
@@ -3365,7 +4943,8 @@ async fn share_doc_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers).await?;
     let sender = session.wallet.clone();
-    let sender_chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&sender));
+    let sender_chain =
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&sender));
     let requested_wallet = body
         .recipient_wallet
         .clone()
@@ -3398,7 +4977,9 @@ async fn share_doc_handler(
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let Some(doc) = doc else {
-        return Err(AppError::Forbidden("You can only share documents you own".into()));
+        return Err(AppError::Forbidden(
+            "You can only share documents you own".into(),
+        ));
     };
 
     let label: Option<String> = doc.get("label");
@@ -3411,25 +4992,21 @@ async fn share_doc_handler(
     let one_time_use = body.one_time_use.unwrap_or(false);
     let download_allowed = body.download_allowed.unwrap_or(true);
     let allow_guest_sign = body.allow_guest_sign;
-    let recipient_chain = requested_wallet
-        .as_deref()
-        .map(|wallet| {
-            body.recipient_chain
+    let recipient_chain = requested_wallet.as_deref().map(|wallet| {
+        body.recipient_chain
+            .as_deref()
+            .and_then(canonical_chain)
+            .unwrap_or_else(|| infer_wallet_chain(wallet))
+            .to_string()
+    });
+    let recipient_wallet = requested_wallet.as_deref().map(|wallet| {
+        normalize_wallet_for_chain(
+            wallet,
+            recipient_chain
                 .as_deref()
-                .and_then(canonical_chain)
-                .unwrap_or_else(|| infer_wallet_chain(wallet))
-                .to_string()
-        });
-    let recipient_wallet = requested_wallet
-        .as_deref()
-        .map(|wallet| {
-            normalize_wallet_for_chain(
-                wallet,
-                recipient_chain
-                    .as_deref()
-                    .unwrap_or_else(|| infer_wallet_chain(wallet)),
-            )
-        });
+                .unwrap_or_else(|| infer_wallet_chain(wallet)),
+        )
+    });
     let recipient_name = body
         .recipient_name
         .clone()
@@ -3438,7 +5015,11 @@ async fn share_doc_handler(
     let signing_url = envelope_signing_url(&access_token);
     let has_wallet_route = recipient_wallet.is_some();
     let has_provider_request = requested_email.is_some() || requested_phone.is_some();
-    let initial_status = if has_wallet_route { "wallet_shared" } else { "created" };
+    let initial_status = if has_wallet_route {
+        "wallet_shared"
+    } else {
+        "created"
+    };
 
     sqlx::query(
         r#"insert into document_shares
@@ -3497,13 +5078,15 @@ async fn share_doc_handler(
         &delivery_errors,
     );
 
-    sqlx::query("update document_shares set delivery_json = $2, status = $3 where access_token_hash = $1")
-        .bind(&access_token_hash)
-        .bind(serde_json::to_value(&deliveries).map_err(|e| AppError::Internal(e.to_string()))?)
-        .bind(final_status)
-        .execute(&st.db)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    sqlx::query(
+        "update document_shares set delivery_json = $2, status = $3 where access_token_hash = $1",
+    )
+    .bind(&access_token_hash)
+    .bind(serde_json::to_value(&deliveries).map_err(|e| AppError::Internal(e.to_string()))?)
+    .bind(final_status)
+    .execute(&st.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
 
     insert_document_event(
         &st.db,
@@ -3573,6 +5156,28 @@ async fn share_doc_handler(
         )
         .await?;
     }
+    record_growth_event(
+        &st.db,
+        "SHARE_CREATED",
+        "wallet",
+        Some(&sender),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(doc_id),
+        Some(envelope_id),
+        None,
+        json!({
+            "recipient_chain": recipient_chain.clone(),
+            "has_wallet_route": has_wallet_route,
+            "has_email_route": requested_email.is_some(),
+            "has_phone_route": requested_phone.is_some(),
+            "status": final_status,
+            "one_time_use": one_time_use,
+            "download_allowed": download_allowed,
+            "allow_guest_sign": allow_guest_sign
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -3626,7 +5231,9 @@ async fn revoke_share_handler(
     .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let Some(updated) = updated else {
-        return Err(AppError::NotFound("Share not found or already revoked".into()));
+        return Err(AppError::NotFound(
+            "Share not found or already revoked".into(),
+        ));
     };
 
     insert_document_event(
@@ -3648,6 +5255,21 @@ async fn revoke_share_handler(
         ),
     )
     .await?;
+    record_growth_event(
+        &st.db,
+        "SHARE_REVOKED",
+        "wallet",
+        Some(&sender),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(doc_id),
+        Some(envelope_id),
+        None,
+        json!({
+            "reason": "sender_revoked"
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -3662,8 +5284,12 @@ async fn list_inbox_handler(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session = require_session_from_headers(&st, &headers).await?;
-    let wallet = normalize_wallet_for_chain(&session.wallet, canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)));
-    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+    let wallet = normalize_wallet_for_chain(
+        &session.wallet,
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
+    );
+    let chain =
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
 
     let rows = sqlx::query(
         r#"
@@ -3733,7 +5359,8 @@ async fn inbox_action_handler(
         &session.wallet,
         canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet)),
     );
-    let chain = canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
+    let chain =
+        canonical_chain(&session.chain).unwrap_or_else(|| infer_wallet_chain(&session.wallet));
     let action = body.action.trim().to_ascii_lowercase();
 
     let row = sqlx::query(
@@ -3811,6 +5438,22 @@ async fn inbox_action_handler(
     .execute(&st.db)
     .await
     .map_err(|e| AppError::Internal(e.to_string()))?;
+    record_growth_event(
+        &st.db,
+        "INBOX_ACTION",
+        "wallet",
+        Some(&session.wallet),
+        Some(&session.chain),
+        Some(&session.session_id),
+        Some(doc_id),
+        Some(envelope_id),
+        None,
+        json!({
+            "action": action.clone(),
+            "status": next_status
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -3883,19 +5526,31 @@ async fn public_envelope_handler(
     let completion_count: i32 = row.get("completion_count");
     let viewed_at: Option<chrono::DateTime<chrono::Utc>> = row.get("viewed_at");
     if revoked_at.is_some() {
-        return Err(AppError::Forbidden("This share link has been revoked".into()));
+        return Err(AppError::Forbidden(
+            "This share link has been revoked".into(),
+        ));
     }
-    if expires_at.map(|value| value <= chrono::Utc::now()).unwrap_or(false) {
+    if expires_at
+        .map(|value| value <= chrono::Utc::now())
+        .unwrap_or(false)
+    {
         return Err(AppError::Forbidden("This share link has expired".into()));
     }
     if one_time_use && completion_count > 0 {
-        return Err(AppError::Forbidden("This one-time share link has already been used".into()));
+        return Err(AppError::Forbidden(
+            "This one-time share link has already been used".into(),
+        ));
     }
     let owner_wallet: String = row.get("owner_wallet");
     let policy = load_document_policy(&st.db, doc_id, &owner_wallet).await?;
     let allow_guest_sign = row
         .get::<Option<bool>, _>("allow_guest_sign")
-        .unwrap_or_else(|| policy.get("allow_guest_sign").and_then(|value| value.as_bool()).unwrap_or(false));
+        .unwrap_or_else(|| {
+            policy
+                .get("allow_guest_sign")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        });
     let allowed_signature_types = {
         let mut modes = Vec::new();
         if allow_guest_sign && public_guest_attestation_enabled() {
@@ -3933,6 +5588,22 @@ async fn public_envelope_handler(
             ),
         )
         .await?;
+        record_growth_event(
+            &st.db,
+            "PUBLIC_ENVELOPE_OPENED",
+            "public",
+            None,
+            None,
+            None,
+            Some(doc_id),
+            Some(envelope_id),
+            None,
+            json!({
+                "recipient_chain": row.get::<Option<String>,_>("recipient_chain"),
+                "status": "opened"
+            }),
+        )
+        .await;
     }
 
     Ok(Json(json!({
@@ -3987,7 +5658,8 @@ async fn public_envelope_blob_handler(
             s.revoked_at,
             s.one_time_use,
             s.download_allowed,
-            s.completion_count
+            s.completion_count,
+            s.envelope_id
         from document_shares s
         join documents d on d.id = s.doc_id
         where s.access_token_hash = $1
@@ -4007,15 +5679,23 @@ async fn public_envelope_blob_handler(
     let one_time_use: bool = row.get("one_time_use");
     let download_allowed: bool = row.get("download_allowed");
     let completion_count: i32 = row.get("completion_count");
+    let envelope_id: uuid::Uuid = row.get("envelope_id");
 
     if revoked_at.is_some() {
-        return Err(AppError::Forbidden("This share link has been revoked".into()));
+        return Err(AppError::Forbidden(
+            "This share link has been revoked".into(),
+        ));
     }
-    if expires_at.map(|value| value <= chrono::Utc::now()).unwrap_or(false) {
+    if expires_at
+        .map(|value| value <= chrono::Utc::now())
+        .unwrap_or(false)
+    {
         return Err(AppError::Forbidden("This share link has expired".into()));
     }
     if one_time_use && completion_count > 0 {
-        return Err(AppError::Forbidden("This one-time share link has already been used".into()));
+        return Err(AppError::Forbidden(
+            "This one-time share link has already been used".into(),
+        ));
     }
 
     let access = DocumentAccessRecord {
@@ -4033,6 +5713,23 @@ async fn public_envelope_blob_handler(
     };
 
     let doc = load_document_bytes_for_access(&st, &access).await?;
+    record_growth_event(
+        &st.db,
+        "PUBLIC_ENVELOPE_DOWNLOADED",
+        "public",
+        None,
+        None,
+        None,
+        Some(access.id),
+        Some(envelope_id),
+        None,
+        json!({
+            "download_allowed": download_allowed,
+            "version": access.version,
+            "mime_type": access.mime_type
+        }),
+    )
+    .await;
 
     Ok((
         StatusCode::OK,
@@ -4046,11 +5743,11 @@ async fn public_envelope_blob_handler(
                     "inline; filename=\"preview\"".to_string()
                 },
             ),
+            (header::CACHE_CONTROL, "no-store, max-age=0".to_string()),
             (
-                header::CACHE_CONTROL,
-                "no-store, max-age=0".to_string(),
+                header::HeaderName::from_static("x-tidbit-hash"),
+                doc.hash_hex,
             ),
-            (header::HeaderName::from_static("x-tidbit-hash"), doc.hash_hex),
             (
                 header::HeaderName::from_static("x-tidbit-version"),
                 doc.version.to_string(),
@@ -4123,38 +5820,50 @@ async fn public_envelope_sign_handler(
     let policy = load_document_policy(&st.db, doc_id, &owner_wallet).await?;
     let allow_guest_sign = row
         .get::<Option<bool>, _>("allow_guest_sign")
-        .unwrap_or_else(|| policy.get("allow_guest_sign").and_then(|value| value.as_bool()).unwrap_or(false));
+        .unwrap_or_else(|| {
+            policy
+                .get("allow_guest_sign")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        });
     let guest_allowed = allow_guest_sign && public_guest_attestation_enabled();
 
     if revoked_at.is_some() {
-        return Err(AppError::Forbidden("This share link has been revoked".into()));
+        return Err(AppError::Forbidden(
+            "This share link has been revoked".into(),
+        ));
     }
-    if expires_at.map(|value| value <= chrono::Utc::now()).unwrap_or(false) {
+    if expires_at
+        .map(|value| value <= chrono::Utc::now())
+        .unwrap_or(false)
+    {
         return Err(AppError::Forbidden("This share link has expired".into()));
     }
     if one_time_use && completion_count > 0 {
-        return Err(AppError::Forbidden("This one-time share link has already been used".into()));
+        return Err(AppError::Forbidden(
+            "This one-time share link has already been used".into(),
+        ));
     }
     if row.get::<String, _>("status") == "completed" {
-        return Err(AppError::Forbidden("This envelope has already been completed".into()));
+        return Err(AppError::Forbidden(
+            "This envelope has already been completed".into(),
+        ));
     }
 
-    let signature_type = body
-        .signature_type
-        .clone()
-        .unwrap_or_else(|| {
-            if guest_allowed {
-                "guest_attestation".to_string()
-            } else {
-                "evm_personal_sign".to_string()
-            }
-        });
+    let signature_type = body.signature_type.clone().unwrap_or_else(|| {
+        if guest_allowed {
+            "guest_attestation".to_string()
+        } else {
+            "evm_personal_sign".to_string()
+        }
+    });
     let signer_identity = body
         .wallet_address
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| body.signer_name.trim().to_string());
-    let canonical_message = public_envelope_sign_message(envelope_id, doc_id, &hash_hex, &signer_identity, version);
+    let canonical_message =
+        public_envelope_sign_message(envelope_id, doc_id, &hash_hex, &signer_identity, version);
     let annotation_fields = normalize_annotation_fields(body.annotation_fields.clone());
 
     let verification = match signature_type.as_str() {
@@ -4163,20 +5872,20 @@ async fn public_envelope_sign_handler(
             "consent": true
         }),
         "evm_personal_sign" => {
-            let wallet_address = body
-                .wallet_address
-                .clone()
-                .ok_or_else(|| AppError::BadRequest("wallet_address is required for EVM signing".into()))?;
-            let signature = body
-                .signature
-                .clone()
-                .ok_or_else(|| AppError::BadRequest("signature is required for EVM signing".into()))?;
+            let wallet_address = body.wallet_address.clone().ok_or_else(|| {
+                AppError::BadRequest("wallet_address is required for EVM signing".into())
+            })?;
+            let signature = body.signature.clone().ok_or_else(|| {
+                AppError::BadRequest("signature is required for EVM signing".into())
+            })?;
             let recovered = verify_evm_signature(&canonical_message, &signature)
                 .map_err(|_| AppError::BadRequest("Invalid EVM signature".into()))?
                 .to_lowercase();
 
             if recovered != wallet_address.to_lowercase() {
-                return Err(AppError::Forbidden("EVM signature does not match wallet_address".into()));
+                return Err(AppError::Forbidden(
+                    "EVM signature does not match wallet_address".into(),
+                ));
             }
 
             json!({
@@ -4187,14 +5896,12 @@ async fn public_envelope_sign_handler(
             })
         }
         "sol_ed25519" => {
-            let wallet_address = body
-                .wallet_address
-                .clone()
-                .ok_or_else(|| AppError::BadRequest("wallet_address is required for Solana signing".into()))?;
-            let signature = body
-                .signature
-                .clone()
-                .ok_or_else(|| AppError::BadRequest("signature is required for Solana signing".into()))?;
+            let wallet_address = body.wallet_address.clone().ok_or_else(|| {
+                AppError::BadRequest("wallet_address is required for Solana signing".into())
+            })?;
+            let signature = body.signature.clone().ok_or_else(|| {
+                AppError::BadRequest("signature is required for Solana signing".into())
+            })?;
 
             verify_solana_signature(&canonical_message, &wallet_address, &signature)?;
 
@@ -4206,25 +5913,26 @@ async fn public_envelope_sign_handler(
             })
         }
         "pq_dilithium3" | "pq_mldsa65" => {
-            let pq_public_key_b64 = body
-                .pq_public_key_b64
-                .clone()
-                .ok_or_else(|| AppError::BadRequest("pq_public_key_b64 is required for PQ signing".into()))?;
-            let signature = body
-                .signature
-                .clone()
-                .ok_or_else(|| AppError::BadRequest("signature is required for PQ signing".into()))?;
+            let pq_public_key_b64 = body.pq_public_key_b64.clone().ok_or_else(|| {
+                AppError::BadRequest("pq_public_key_b64 is required for PQ signing".into())
+            })?;
+            let signature = body.signature.clone().ok_or_else(|| {
+                AppError::BadRequest("signature is required for PQ signing".into())
+            })?;
             let public_key = base64::engine::general_purpose::STANDARD
                 .decode(&pq_public_key_b64)
                 .map_err(|_| AppError::BadRequest("Invalid pq_public_key_b64".into()))?;
             let signed_message = base64::engine::general_purpose::STANDARD
                 .decode(&signature)
                 .map_err(|_| AppError::BadRequest("Invalid PQ signed message encoding".into()))?;
-            let verified = dilithium::verify(&public_key, canonical_message.as_bytes(), &signed_message)
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let verified =
+                dilithium::verify(&public_key, canonical_message.as_bytes(), &signed_message)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
 
             if !verified {
-                return Err(AppError::Forbidden("PQ signature verification failed".into()));
+                return Err(AppError::Forbidden(
+                    "PQ signature verification failed".into(),
+                ));
             }
 
             json!({
@@ -4237,7 +5945,9 @@ async fn public_envelope_sign_handler(
     };
 
     if signature_type == "guest_attestation" && !guest_allowed {
-        return Err(AppError::Forbidden("Guest attestation is disabled for this envelope".into()));
+        return Err(AppError::Forbidden(
+            "Guest attestation is disabled for this envelope".into(),
+        ));
     }
 
     let annotation_json = json!({
@@ -4307,6 +6017,36 @@ async fn public_envelope_sign_handler(
         ),
     )
     .await?;
+    let signer_chain = body
+        .wallet_address
+        .as_deref()
+        .map(infer_wallet_chain)
+        .map(str::to_string);
+    let normalized_signer_wallet = body.wallet_address.as_deref().map(|wallet| {
+        normalize_wallet_for_chain(
+            wallet,
+            signer_chain
+                .as_deref()
+                .unwrap_or_else(|| infer_wallet_chain(wallet)),
+        )
+    });
+    record_growth_event(
+        &st.db,
+        "PUBLIC_ENVELOPE_COMPLETED",
+        "public",
+        normalized_signer_wallet.as_deref(),
+        signer_chain.as_deref(),
+        None,
+        Some(doc_id),
+        Some(envelope_id),
+        None,
+        json!({
+            "signature_type": signature_type.clone(),
+            "signer_name": body.signer_name.trim(),
+            "has_wallet": body.wallet_address.is_some()
+        }),
+    )
+    .await;
 
     Ok(Json(json!({
         "ok": true,
@@ -4435,7 +6175,9 @@ async fn revoke_specific_session_handler(
         .await?;
 
     if !revoked {
-        return Err(AppError::BadRequest("Session not found or already inactive".into()));
+        return Err(AppError::BadRequest(
+            "Session not found or already inactive".into(),
+        ));
     }
 
     if target_session_id == sess.session_id {
@@ -4513,8 +6255,7 @@ async fn public_verify_handler(
 mod tests {
     use super::{
         bool_from_form_text, build_share_event_payload, document_sign_message,
-        normalize_annotation_fields, 
-        wallet_can_access_document,
+        normalize_annotation_fields, wallet_can_access_document,
     };
     use crate::models::SignerAnnotationField;
 

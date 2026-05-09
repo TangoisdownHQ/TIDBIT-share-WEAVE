@@ -44,6 +44,8 @@ pub struct EvmVerifyRequest {
     pub session_id: String,
     pub address: String,
     pub signature: String,
+    pub visitor_id: Option<String>,
+    pub attribution: Option<serde_json::Value>,
 }
 
 pub async fn evm_verify_handler(
