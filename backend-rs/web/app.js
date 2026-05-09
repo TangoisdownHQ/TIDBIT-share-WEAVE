@@ -2482,11 +2482,11 @@ function ensurePreviewModal() {
   return modal;
 }
 
-function showPreviewModal(title, blob, mimeType, annotationFields = []) {
+function showPreviewModal(title, blob, mimeType, annotationFields = [], fileName = "") {
   const modal = ensurePreviewModal();
   document.getElementById("previewModalTitle").textContent = title || "Large preview";
   const body = document.getElementById("previewModalBody");
-  body.replaceChildren(renderPreviewNode(blob, mimeType, { annotationFields }));
+  body.replaceChildren(renderPreviewNode(blob, mimeType, { annotationFields, fileName }));
   modal.classList.remove("hidden");
   modal.setAttribute("aria-hidden", "false");
 }
@@ -2571,8 +2571,32 @@ function bindInteractivePreview(stage, overlay) {
   });
 }
 
+function normalizeMimeType(mimeType) {
+  return String(mimeType || "")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+}
+
+function isDocxFileName(fileName) {
+  return String(fileName || "").trim().toLowerCase().endsWith(".docx");
+}
+
 function isDocxMimeType(mimeType) {
-  return mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const normalized = normalizeMimeType(mimeType);
+  return normalized === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    normalized === "application/x-vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+function shouldRenderDocxPreview(blob, mimeType, fileName) {
+  const normalizedMimeType = normalizeMimeType(mimeType) || normalizeMimeType(blob?.type);
+  if (isDocxMimeType(normalizedMimeType)) {
+    return true;
+  }
+  if (!normalizedMimeType || normalizedMimeType === "application/octet-stream" || normalizedMimeType === "application/zip") {
+    return isDocxFileName(fileName);
+  }
+  return false;
 }
 
 function buildSafePreviewFragment(html) {
@@ -2694,43 +2718,34 @@ function renderPreviewNode(blob, mimeType, options = {}) {
   const stage = document.createElement("div");
   stage.className = "preview-stage";
   const objectUrl = URL.createObjectURL(blob);
+  const normalizedMimeType = normalizeMimeType(mimeType) || normalizeMimeType(blob?.type);
+  const displayMimeType = String(mimeType || blob?.type || "").trim() || "application/octet-stream";
 
-  if (mimeType.startsWith("image/")) {
+  if (normalizedMimeType.startsWith("image/")) {
     const img = document.createElement("img");
     img.src = objectUrl;
     img.alt = "Document preview";
     img.className = "preview-image";
     stage.appendChild(img);
-  } else if (mimeType === "application/pdf") {
+  } else if (normalizedMimeType === "application/pdf") {
     const frame = document.createElement("iframe");
     frame.src = objectUrl;
     frame.className = "preview-frame";
     frame.title = "PDF preview";
     stage.appendChild(frame);
-  } else if (mimeType.startsWith("video/")) {
+  } else if (normalizedMimeType.startsWith("video/")) {
     const video = document.createElement("video");
     video.src = objectUrl;
     video.className = "preview-video";
     video.controls = true;
     stage.appendChild(video);
-  } else if (mimeType.startsWith("audio/")) {
+  } else if (normalizedMimeType.startsWith("audio/")) {
     const audio = document.createElement("audio");
     audio.src = objectUrl;
     audio.className = "preview-audio";
     audio.controls = true;
     shell.appendChild(audio);
-  } else if (
-    mimeType.startsWith("text/") ||
-    mimeType === "application/json" ||
-    mimeType === "application/xml"
-  ) {
-    const pre = document.createElement("pre");
-    pre.className = "preview-fallback";
-    blob.text().then((text) => {
-      pre.textContent = text;
-    });
-    shell.appendChild(pre);
-  } else if (isDocxMimeType(mimeType)) {
+  } else if (shouldRenderDocxPreview(blob, mimeType, options.fileName)) {
     const docxRoot = document.createElement("div");
     docxRoot.className = "preview-docx";
     docxRoot.appendChild(
@@ -2783,10 +2798,21 @@ function renderPreviewNode(blob, mimeType, options = {}) {
           })
         );
       });
+  } else if (
+    normalizedMimeType.startsWith("text/") ||
+    normalizedMimeType === "application/json" ||
+    normalizedMimeType === "application/xml"
+  ) {
+    const pre = document.createElement("pre");
+    pre.className = "preview-fallback";
+    blob.text().then((text) => {
+      pre.textContent = text;
+    });
+    shell.appendChild(pre);
   } else {
     const fallback = document.createElement("div");
     fallback.className = "preview-fallback";
-    fallback.appendChild(createElement("strong", { text: `Preview unavailable for ${mimeType || "this file type"}.` }));
+    fallback.appendChild(createElement("strong", { text: `Preview unavailable for ${displayMimeType || "this file type"}.` }));
     fallback.appendChild(createElement("div", { className: "doc-meta", text: "Use the verified download to inspect it locally before signing." }));
     shell.appendChild(fallback);
   }
@@ -2852,7 +2878,12 @@ async function loadReviewPage() {
       createMetaLine("Integrity", verified ? "verified" : "mismatch detected")
     );
 
-    setContent(previewRoot, renderPreviewNode(blob, review.mime_type || "application/octet-stream"));
+    setContent(
+      previewRoot,
+      renderPreviewNode(blob, review.mime_type || "application/octet-stream", {
+        fileName: review.label || "",
+      })
+    );
     setContent(eventsRoot, renderHistoryCards(events, { currentWallet, ownerWallet: review.owner_wallet }));
 
     const signBtn = document.getElementById("reviewSignBtn");
@@ -2863,7 +2894,13 @@ async function loadReviewPage() {
     signBtn.onclick = () => signDocument(reviewDocument);
     downloadBtn.onclick = () => downloadAndVerify(reviewDocument);
     document.getElementById("reviewEnlargeBtn").onclick = () =>
-      showPreviewModal(review.label || "Large preview", blob, review.mime_type || "application/octet-stream");
+      showPreviewModal(
+        review.label || "Large preview",
+        blob,
+        review.mime_type || "application/octet-stream",
+        [],
+        review.label || ""
+      );
     document.getElementById("reviewEditBtn").onclick = () =>
       (window.location.href = `/edit.html?id=${encodeURIComponent(id)}`);
     historyLink.href = `/document.html?id=${encodeURIComponent(id)}`;
@@ -2940,7 +2977,12 @@ async function loadDocumentDetailsPage() {
       evidence.evidence_bundle?.evidence_bundle_arweave_tx || "not anchored"
     )
   );
-  setContent(previewRoot, renderPreviewNode(blob, currentDocumentDetails.mime_type || "application/octet-stream"));
+  setContent(
+    previewRoot,
+    renderPreviewNode(blob, currentDocumentDetails.mime_type || "application/octet-stream", {
+      fileName: currentDocumentDetails.label || "",
+    })
+  );
   setContent(lineageRoot, renderLineageCards(evidence.lineage || []));
   setContent(sharesRoot, renderShareCards(evidence.shares || []));
   setContent(
@@ -2963,7 +3005,13 @@ async function loadDocumentDetailsPage() {
     window.location.href = "/dashboard.html";
   };
   document.getElementById("detailEnlargeBtn").onclick = () =>
-    showPreviewModal(currentDocumentDetails.label || "Large preview", blob, currentDocumentDetails.mime_type || "application/octet-stream");
+    showPreviewModal(
+      currentDocumentDetails.label || "Large preview",
+      blob,
+      currentDocumentDetails.mime_type || "application/octet-stream",
+      [],
+      currentDocumentDetails.label || ""
+    );
 }
 
 async function loadEditorPage() {
@@ -3083,6 +3131,7 @@ async function loadPublicSignPage() {
       renderPreviewNode(blob, envelope.mime_type || "application/octet-stream", {
         interactive: true,
         annotationFields: window.publicEnvelopeFields,
+        fileName: envelope.label || "",
       })
     );
     updateAnnotationFieldList(window.publicEnvelopeFields);
