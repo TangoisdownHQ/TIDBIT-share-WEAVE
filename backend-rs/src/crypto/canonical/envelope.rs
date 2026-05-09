@@ -17,6 +17,15 @@ use crate::crypto::canonical::hash::envelope_id;
 use crate::crypto::canonical::kem::{mlkem_decapsulate_b64, mlkem_encapsulate_b64};
 use crate::crypto::canonical::{CanonicalDocumentV1, EncryptionInfoV1, WrappedCekV1};
 
+fn normalize_wallet_identifier(wallet: &str) -> String {
+    let trimmed = wallet.trim();
+    if trimmed.starts_with("0x") {
+        trimmed.to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentEnvelopeV1 {
     pub v: u16,
@@ -91,7 +100,7 @@ impl DocumentEnvelopeV1 {
 
             wrapped_keys.push(WrappedCekV1 {
                 kem: "mlkem768".into(),
-                recipient: wallet.to_lowercase(),
+                recipient: normalize_wallet_identifier(&wallet),
                 kem_ct_b64,
                 wrap_nonce_b64: URL_SAFE_NO_PAD.encode(wrap_nonce_bytes),
                 wrapped_cek_b64: URL_SAFE_NO_PAD.encode(wrapped_cek),
@@ -109,7 +118,7 @@ impl DocumentEnvelopeV1 {
         // 5) Envelope
         let env = DocumentEnvelopeV1 {
             v: 1,
-            owner: owner_wallet.to_lowercase(),
+            owner: normalize_wallet_identifier(&owner_wallet),
             created_at,
             doc,
             encryption,
@@ -129,13 +138,17 @@ impl DocumentEnvelopeV1 {
         wallet: &str,
         mlkem_sk_b64: &str,
     ) -> Result<Vec<u8>, String> {
-        let wallet_lc = wallet.to_lowercase();
+        let normalized_wallet = normalize_wallet_identifier(wallet);
+        let legacy_lowercase_wallet = wallet.trim().to_ascii_lowercase();
 
         let wk = self
             .encryption
             .wrapped_keys
             .iter()
-            .find(|k| k.recipient == wallet_lc)
+            .find(|k| {
+                k.recipient == normalized_wallet
+                    || (!wallet.trim().starts_with("0x") && k.recipient == legacy_lowercase_wallet)
+            })
             .ok_or_else(|| "no wrapped key for this wallet".to_string())?;
 
         // 1) Decapsulate
